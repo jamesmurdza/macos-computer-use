@@ -109,6 +109,50 @@ describe("uiTreeSummary", () => {
     expect(parsed.windows[0].elements).toEqual([{ role: "AXTextArea", label: "(empty text area)" }]);
   });
 
+  it("drops an off-screen (scrolled-past) element's label but still keeps an on-screen sibling", async () => {
+    // Regression: verified against a real, loaded Wikipedia page that its window carries a real
+    // `bounds` rect, and that without this filter a deep web page's off-screen content (nav menus,
+    // scrolled-past paragraphs) drowns out the ~250 nodes actually visible in the viewport out of
+    // ~7000 total, blowing the char budget before ever reaching what's on screen.
+    const withMixedVisibility = {
+      applications: [{ info: { name: "Safari", active: true }, windows: [1] }],
+      windows: [
+        {
+          name: "Safari",
+          owner: "Safari",
+          role: "app",
+          is_on_screen: true,
+          bounds: { x: 0, y: 0, width: 1280, height: 960 },
+          children: [
+            { name: "Visible heading", role: "AXHeading", bbox: [10, 10, 200, 40] },
+            { name: "Scrolled past", role: "AXStaticText", bbox: [10, 5000, 200, 5030] },
+          ],
+        },
+      ],
+    };
+    const json = await uiTreeSummary(fakeSandbox(withMixedVisibility));
+    const parsed = JSON.parse(json);
+    expect(parsed.windows[0].elements).toEqual([{ role: "AXHeading", label: "Visible heading" }]);
+  });
+
+  it("doesn't filter by visibility at all when a window has no bounds to filter against", async () => {
+    const noBounds = {
+      applications: [{ info: { name: "Calculator", active: true }, windows: [1] }],
+      windows: [
+        {
+          name: "Calculator",
+          owner: "Calculator",
+          role: "app",
+          is_on_screen: true,
+          children: [{ name: "9999", role: "AXStaticText", bbox: [-500, -500, -400, -400] }],
+        },
+      ],
+    };
+    const json = await uiTreeSummary(fakeSandbox(noBounds));
+    const parsed = JSON.parse(json);
+    expect(parsed.windows[0].elements).toEqual([{ role: "AXStaticText", label: "9999" }]);
+  });
+
   it("still drops an empty element whose role isn't an input (e.g. a bare wrapper AXGroup)", async () => {
     const withEmptyGroup = {
       applications: [{ info: { name: "Notes", active: true }, windows: [1] }],

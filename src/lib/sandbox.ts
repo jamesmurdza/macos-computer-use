@@ -124,6 +124,9 @@ interface UiWindowNode {
   owner: string;
   role: string;
   is_on_screen?: boolean;
+  /** The window's own on-screen rectangle. Used to filter a deeply-nested web page's accessibility
+   * tree down to roughly what's actually visible right now -- see pruneElement()'s viewport param. */
+  bounds?: { x: number; y: number; width: number; height: number };
   children?: UiElementNode[];
 }
 
@@ -153,12 +156,37 @@ interface PrunedElement {
  */
 const SYSTEM_CHROME_OWNERS = new Set(["Notification Center", "Control Center", "Dock", "Window Server"]);
 
-/** role/label/children only — drops ids, geometry, and structural wrappers with nothing in them. */
-function pruneElement(node: UiElementNode, depth: number, maxDepth: number): PrunedElement | null {
-  const label = nodeLabel(node);
+type Rect = { x: number; y: number; width: number; height: number };
+
+/** Whether a [x1,y1,x2,y2] box has positive area and overlaps `viewport` at all. `undefined` bbox
+ * (common for structural wrappers with no geometry of their own) is treated as "can't tell, don't
+ * filter it out" -- only a box that's actually somewhere else on screen gets excluded. */
+function intersectsViewport(bbox: number[] | undefined, viewport: Rect | undefined): boolean {
+  if (!viewport || !Array.isArray(bbox) || bbox.length !== 4) return true;
+  const [x1, y1, x2, y2] = bbox;
+  if (!(x2 > x1 && y2 > y1)) return false; // zero/negative area -- collapsed or hidden
+  return x1 < viewport.x + viewport.width && x2 > viewport.x && y1 < viewport.y + viewport.height && y2 > viewport.y;
+}
+
+/**
+ * role/label/children only — drops ids, geometry, and structural wrappers with nothing in them.
+ *
+ * `viewport`, when given, additionally drops a node's *label* (treating it the same as having no
+ * label at all) if its own bbox is off-screen -- verified against a real, loaded Wikipedia page:
+ * without this, a rendered web page's actual paragraph text sits 15-18 levels deep in nested
+ * generic groups, so reaching it at all needs a much deeper walk than any native app dialog ever
+ * does, and a deep walk with no visibility filter blows the char budget on off-screen/scrolled-past
+ * content before ever reaching what's actually on screen (measured on that same page: only ~250 of
+ * ~7000 real-content nodes were actually within the window's bounds). Still recurses into an
+ * off-screen node's children regardless, since a container's own bbox being stale/off doesn't mean
+ * its children are.
+ */
+function pruneElement(node: UiElementNode, depth: number, maxDepth: number, viewport?: Rect): PrunedElement | null {
+  const visible = intersectsViewport(node.visible_bbox ?? node.bbox, viewport);
+  const label = visible ? nodeLabel(node) : undefined;
   const children =
     depth < maxDepth && Array.isArray(node.children)
-      ? node.children.map((c) => pruneElement(c, depth + 1, maxDepth)).filter((c): c is PrunedElement => c !== null)
+      ? node.children.map((c) => pruneElement(c, depth + 1, maxDepth, viewport)).filter((c): c is PrunedElement => c !== null)
       : [];
   if (!label && children.length === 0) return null;
   const pruned: PrunedElement = { role: node.role_description || node.role || "element" };
@@ -171,7 +199,10 @@ function pruneElement(node: UiElementNode, depth: number, maxDepth: number): Pru
 export interface UiSummaryOptions {
   /** Hard cap on the returned JSON string's length. A full tree can run to hundreds of KB. */
   maxChars?: number;
-  /** How many levels deep to walk each window's element tree. */
+  /** How many levels deep to walk each window's element tree. Deep by default (native app dialogs
+   * rarely nest past 6-8 levels, but a rendered web page's real text routinely sits 15-18 levels
+   * deep in nested generic groups -- verified against a real loaded Wikipedia page) since the
+   * viewport filter above is what actually keeps the output small, not this. */
   maxDepth?: number;
 }
 
@@ -183,8 +214,12 @@ export interface UiSummaryOptions {
  * "active but nothing to act on" state (e.g. an app still launching) is otherwise invisible.
  */
 function summarizeTree(raw: UiTreeResponse, opts: UiSummaryOptions = {}): string {
-  const maxChars = opts.maxChars ?? 7000;
-  const maxDepth = opts.maxDepth ?? 6;
+  // 7000 was sized for compact native-app dialogs; a real, fully-loaded web page's single viewport
+  // -- verified against a live Wikipedia page, post-viewport-filtering -- still runs to ~20000
+  // chars once real article content is included, so this needs real headroom above that or every
+  // web-reading task truncates before reaching the text it was asked to read.
+  const maxChars = opts.maxChars ?? 24000;
+  const maxDepth = opts.maxDepth ?? 24;
 
   const apps = (raw.applications ?? [])
     .filter((a) => a.info.active || a.windows.length > 0)
@@ -201,7 +236,9 @@ function summarizeTree(raw: UiTreeResponse, opts: UiSummaryOptions = {}): string
       app: w.owner,
       role: w.role,
       title: w.name || undefined,
-      elements: (w.children ?? []).map((c) => pruneElement(c, 0, maxDepth)).filter((c): c is PrunedElement => c !== null),
+      elements: (w.children ?? [])
+        .map((c) => pruneElement(c, 0, maxDepth, w.bounds))
+        .filter((c): c is PrunedElement => c !== null),
     }));
 
   const shownOwners = new Set(windows.map((w) => w.app));
