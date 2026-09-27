@@ -114,6 +114,9 @@ describe("uiTreeSummary", () => {
     // `bounds` rect, and that without this filter a deep web page's off-screen content (nav menus,
     // scrolled-past paragraphs) drowns out the ~250 nodes actually visible in the viewport out of
     // ~7000 total, blowing the char budget before ever reaching what's on screen.
+    // Nested inside a container (a scroll area), like real content actually is -- not a direct
+    // child of the window itself, which only ever holds top-level regions (toolbars, content
+    // panes, sheets) that reliableViewport() separately sanity-checks against the window's bounds.
     const withMixedVisibility = {
       applications: [{ info: { name: "Safari", active: true }, windows: [1] }],
       windows: [
@@ -124,15 +127,22 @@ describe("uiTreeSummary", () => {
           is_on_screen: true,
           bounds: { x: 0, y: 0, width: 1280, height: 960 },
           children: [
-            { name: "Visible heading", role: "AXHeading", bbox: [10, 10, 200, 40] },
-            { name: "Scrolled past", role: "AXStaticText", bbox: [10, 5000, 200, 5030] },
+            {
+              name: null,
+              role: "AXScrollArea",
+              bbox: [0, 0, 1280, 960],
+              children: [
+                { name: "Visible heading", role: "AXHeading", bbox: [10, 10, 200, 40] },
+                { name: "Scrolled past", role: "AXStaticText", bbox: [10, 5000, 200, 5030] },
+              ],
+            },
           ],
         },
       ],
     };
     const json = await uiTreeSummary(fakeSandbox(withMixedVisibility));
     const parsed = JSON.parse(json);
-    expect(parsed.windows[0].elements).toEqual([{ role: "AXHeading", label: "Visible heading" }]);
+    expect(parsed.windows[0].elements).toEqual([{ role: "AXScrollArea", children: [{ role: "AXHeading", label: "Visible heading" }] }]);
   });
 
   it("doesn't filter by visibility at all when a window has no bounds to filter against", async () => {
@@ -183,6 +193,40 @@ describe("uiTreeSummary", () => {
     const json = await uiTreeSummary(fakeSandbox(bogusWindowBounds));
     const parsed = JSON.parse(json);
     expect(parsed.windows[0].elements).toEqual([{ role: "AXGroup", label: "desktop", children: [{ role: "AXImage", label: "untitled_folder" }] }]);
+  });
+
+  it("ignores a window's bounds when a modal sheet renders outside them", async () => {
+    // Regression: verified against a real sandbox that TextEdit's Save panel is reported as nested
+    // inside its owning document window's children, but the sheet's own raw bbox extended from
+    // x=75 to x=955 while the document window underneath it claimed bounds of only x=213 to x=816.
+    // Filtering the sheet's own children (its location sidebar -- Desktop, Documents, ...) against
+    // the document window's bounds silently deleted every sidebar label to the left of x=213,
+    // removing the one control needed to actually choose a save location.
+    const sheetOutsideWindow = {
+      applications: [{ info: { name: "TextEdit", active: true }, windows: [1] }],
+      windows: [
+        {
+          name: "Untitled",
+          owner: "TextEdit",
+          role: "app",
+          is_on_screen: true,
+          bounds: { x: 213, y: 77, width: 603, height: 505 }, // x: 213-816
+          children: [
+            {
+              name: null,
+              role: "AXSheet",
+              description: "save",
+              bbox: [75, 145, 955, 593], // extends left of 213 and right of 816
+              visible_bbox: [213, 145, 816, 582], // macOS itself already clipped this to the window
+              children: [{ name: "Desktop", role: "AXStaticText", bbox: [128, 170, 208, 188] }], // left of x=213
+            },
+          ],
+        },
+      ],
+    };
+    const json = await uiTreeSummary(fakeSandbox(sheetOutsideWindow));
+    const parsed = JSON.parse(json);
+    expect(parsed.windows[0].elements).toEqual([{ role: "AXSheet", label: "save", children: [{ role: "AXStaticText", label: "Desktop" }] }]);
   });
 
   it("still drops an empty element whose role isn't an input (e.g. a bare wrapper AXGroup)", async () => {

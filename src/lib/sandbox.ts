@@ -168,17 +168,38 @@ function intersectsViewport(bbox: number[] | undefined, viewport: Rect | undefin
   return x1 < viewport.x + viewport.width && x2 > viewport.x && y1 < viewport.y + viewport.height && y2 > viewport.y;
 }
 
+/** Whether a [x1,y1,x2,y2] box sits entirely within `rect` (a few px of slop for rounding). Used
+ * only to sanity-check a window's own `bounds` against its direct children's *raw* geometry -- see
+ * reliableViewport()'s modal-sheet case, where a child can legitimately render outside the bounds
+ * its nominal parent window reports. */
+function isFullyContained(bbox: number[], rect: Rect, slop = 2): boolean {
+  const [x1, y1, x2, y2] = bbox;
+  return x1 >= rect.x - slop && y1 >= rect.y - slop && x2 <= rect.x + rect.width + slop && y2 <= rect.y + rect.height + slop;
+}
+
 /**
  * A window's own `bounds` is usually a trustworthy viewport (verified against a real Safari
- * window), but not always: Finder's Desktop icon layer reports itself as a ~window~ whose `bounds`
- * is a tiny sliver (e.g. 88x21 px, evidently some incidental UI detail's rect, not the desktop's own
- * area) while its actual child content spans the full screen -- verified against a real sandbox
- * right after creating a desktop folder. Filtering that child against the reported 88x21 rect would
- * make the new folder's own icon (and its in-progress rename field) vanish from the tree entirely,
- * right when the model most needs to see it. Guard against this two ways: bounds implausibly small
- * to be a real content area at all, or a direct child reporting a bbox far bigger than the window
- * claiming to contain it -- either way, skip filtering for that window rather than risk hiding real
- * on-screen content because of one untrustworthy rectangle.
+ * window), but not always:
+ *
+ * - Finder's Desktop icon layer reports itself as a ~window~ whose `bounds` is a tiny sliver (e.g.
+ *   88x21 px, evidently some incidental UI detail's rect, not the desktop's own area) while its
+ *   actual child content spans the full screen -- verified against a real sandbox right after
+ *   creating a desktop folder. Filtering that child against the reported 88x21 rect would make the
+ *   new folder's own icon (and its in-progress rename field) vanish from the tree entirely, right
+ *   when the model most needs to see it.
+ * - A modal sheet (e.g. TextEdit's Save panel) is reported as nested *inside* its owning document
+ *   window's children, but can render wider than that window and centered differently -- verified
+ *   against a real sandbox: a Save sheet's own raw bbox was `[75, 145, 955, 593]` while the document
+ *   window underneath it claimed bounds of only `[213, 77, +603, +505]` (i.e. x 213-816). Filtering
+ *   the sheet's own children (its whole location sidebar -- Desktop, Documents, ...) against the
+ *   *document window's* bounds clipped out everything left of x=213, which silently deleted the
+ *   entire sidebar's labels from the tree (the one control needed to actually choose a save
+ *   location). Note this must be checked against the child's raw `bbox`, not `visible_bbox`: macOS
+ *   itself already clipped the sheet's own `visible_bbox` to match the window, which is exactly the
+ *   deceptive value that would hide this case if used here.
+ *
+ * Either way, skip filtering for that window rather than risk hiding real on-screen content because
+ * of one untrustworthy rectangle.
  */
 function reliableViewport(w: UiWindowNode): Rect | undefined {
   const b = w.bounds;
@@ -186,6 +207,10 @@ function reliableViewport(w: UiWindowNode): Rect | undefined {
   const windowArea = b.width * b.height;
   if (windowArea < 10_000) return undefined; // smaller than ~100x100 -- not plausible as a real content viewport
   for (const c of w.children ?? []) {
+    const rawBox = c.bbox;
+    if (Array.isArray(rawBox) && rawBox.length === 4 && !isFullyContained(rawBox, b)) {
+      return undefined; // a direct child (e.g. a modal sheet) isn't fully contained by its own window
+    }
     const cb = c.visible_bbox ?? c.bbox;
     if (!Array.isArray(cb) || cb.length !== 4) continue;
     const childArea = Math.max(0, cb[2] - cb[0]) * Math.max(0, cb[3] - cb[1]);
