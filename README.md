@@ -105,7 +105,7 @@ recording a session to review later:
 npx tsx tools/agent-run.ts "use xcode to make and run a hello world script"
 ```
 
-This creates its own sandbox, shrinks its resolution to 800x600 by default (see `RESOLUTION`
+This creates its own sandbox, shrinks its resolution to 1280x960 by default (see `RESOLUTION`
 below), records the whole run as video (native to the use.computer gateway — no extra setup) and
 writes a timestamped JSONL log of every tool call, result, and reply. Everything is saved locally
 to `/tmp/logs/runs/<runId>/`, and — if these four extra vars are set in `.env` — also uploaded to a

@@ -127,7 +127,7 @@ RESOLUTION=native npx tsx tools/agent-run.ts "..."     # keep the sandbox's nati
 AGENT_RUN_ANTHROPIC_API_KEY=sk-ant-... npx tsx tools/agent-run.ts "..."   # kept out of the web app
 ```
 
-- Shrinks the sandbox to `DEFAULT_RESOLUTION` (800x600, the smallest usable mode -- see "Display
+- Shrinks the sandbox to `DEFAULT_RESOLUTION` (1280x960 -- see "Display
   resolution" above) before starting the recording, unless `RESOLUTION` overrides it (a `WxH` value,
   or `native` to skip resizing and keep the sandbox at its native 1920x1080).
 - Recording is native to the gateway (`sandbox.recording.start()/stop()`, confirmed a genuine

@@ -56,11 +56,11 @@ const { addRunToGalleryIndex } = await import("../src/lib/gallery.js");
 const { isModelChoice, DEFAULT_MODEL_CHOICE } = await import("../src/lib/llm.js");
 
 /**
- * Applied automatically unless RESOLUTION says otherwise -- keeps recorded video files small by
- * default. 800x600 is the smallest usable mode this virtual display supports (see testing.md's
- * "Display resolution" section for the full list of 11 verified modes).
+ * Applied automatically unless RESOLUTION says otherwise -- keeps recorded video files smaller
+ * than the sandbox's native 1920x1080 by default. One of 11 verified usable modes this virtual
+ * display supports (see testing.md's "Display resolution" section for the full list).
  */
-const DEFAULT_RESOLUTION = { width: 800, height: 600 };
+const DEFAULT_RESOLUTION = { width: 1280, height: 960 };
 
 function parseResolution(v: string | undefined): { width: number; height: number } | undefined {
   if (v === undefined) return DEFAULT_RESOLUTION;
