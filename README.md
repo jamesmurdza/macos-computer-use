@@ -126,13 +126,13 @@ Without the R2 vars, it still runs end-to-end and just skips the upload. See
 
 ## Recordings gallery
 
-Every successful `agent-run.ts` run shows up automatically at
-[`/gallery`](http://localhost:3000/gallery) — a clean grid of thumbnails, each with its prompt as
-a description, the date, and a YouTube-style duration badge; click one to play the recording.
-
-It reads `index.json` (rebuilt after each recorded run) from the bucket's public URL, so it needs
-only `R2_PUBLIC_BASE_URL` in `.env` — no R2 secret credentials are ever loaded by the web app
-itself. Without that var set, the page just explains what to add instead of erroring.
+Every successful `agent-run.ts` run gets added to a bucket-wide `index.json` (rebuilt after each
+run). A **separate, standalone app** in [`gallery/`](gallery/) reads that index and renders a
+clean grid — thumbnail, prompt as description, date, YouTube-style duration badge; click one to
+play the recording. It's a fully independent Next.js app on purpose — no shared dependencies, no
+shared code, no shared credentials, meant to be deployed as its own Vercel project (this app and
+the gallery don't need to run on the same host, or even both be deployed at all). See
+[`gallery/README.md`](gallery/README.md) for setup.
 
 ## Test
 

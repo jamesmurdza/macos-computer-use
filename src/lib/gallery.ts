@@ -1,8 +1,14 @@
-import { downloadRunArtifact, listRunIds, publicRunArtifactUrl, uploadRunArtifact } from "./storage";
+import { downloadRunArtifact, listRunIds, uploadRunArtifact } from "./storage";
 
-/** One card in the `/gallery` page -- deliberately just references (keys), not resolved URLs, so
- * the index stays valid regardless of which URL scheme (public vs presigned) a reader ends up
- * using. */
+/**
+ * Writer side of the gallery index. The reader (a completely separate app -- see `../../gallery/`,
+ * deployed as its own Vercel project with no shared code or credentials) has its own copy of this
+ * `GalleryEntry` shape in `gallery/src/lib/gallery.ts`; keep the two in sync if this ever changes,
+ * since `index.json` is the entire contract between them.
+ *
+ * Entries deliberately store references (keys), not resolved URLs, so the index stays valid
+ * regardless of which URL scheme (public vs presigned) a reader ends up using.
+ */
 export interface GalleryEntry {
   runId: string;
   /** The prompt, as typed -- short imperative instructions ("open Safari and load the New York
@@ -38,7 +44,7 @@ const INDEX_KEY = "index.json";
  * something worth showing in a gallery of "what the agent did".
  *
  * Requires R2 write credentials (via storage.ts's `client()`), so this only ever runs from
- * tools/agent-run.ts, never from the web app.
+ * tools/agent-run.ts, never from any web app.
  */
 export async function rebuildGalleryIndex(): Promise<GalleryEntry[]> {
   const runIds = await listRunIds();
@@ -69,55 +75,4 @@ export async function rebuildGalleryIndex(): Promise<GalleryEntry[]> {
 
   await uploadRunArtifact(INDEX_KEY, new TextEncoder().encode(JSON.stringify(entries, null, 2)), "application/json");
   return entries;
-}
-
-export interface GalleryEntryResolved extends GalleryEntry {
-  videoUrl: string;
-  thumbnailUrl: string;
-}
-
-/**
- * Read `index.json` for the `/gallery` page -- a plain public `fetch()` against
- * `R2_PUBLIC_BASE_URL`, no R2 credentials involved at all (the web app never holds any). Returns
- * `configured: false` if that var isn't set, so the page can render a clear setup message instead
- * of a confusing empty gallery.
- */
-export async function loadGalleryIndex(): Promise<{ configured: boolean; entries: GalleryEntryResolved[] }> {
-  const base = process.env.R2_PUBLIC_BASE_URL;
-  if (!base) return { configured: false, entries: [] };
-
-  const url = publicRunArtifactUrl(INDEX_KEY)!;
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) {
-    // No runs recorded yet (index.json never created) is the common case of a 404 here -- not an
-    // error worth surfacing differently from "zero entries".
-    return { configured: true, entries: [] };
-  }
-  const raw = (await res.json()) as GalleryEntry[];
-  const entries = raw.map((e) => ({
-    ...e,
-    videoUrl: publicRunArtifactUrl(e.videoKey)!,
-    thumbnailUrl: publicRunArtifactUrl(e.thumbnailKey)!,
-  }));
-  return { configured: true, entries };
-}
-
-/** "4:31" / "1:04:31" -- YouTube-style duration, no leading zero on the first group. */
-export function formatDuration(ms: number): string {
-  const totalSeconds = Math.round(ms / 1000);
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
-  const s = totalSeconds % 60;
-  const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
-  const ss = String(s).padStart(2, "0");
-  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
-}
-
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-/** "Sep 27, 2026" -- deliberately UTC-based (not `toLocaleDateString`), so a card renders the same
- * string during server-side render and client hydration regardless of either side's timezone. */
-export function formatDate(iso: string): string {
-  const d = new Date(iso);
-  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
 }

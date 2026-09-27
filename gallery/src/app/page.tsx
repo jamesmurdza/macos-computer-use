@@ -1,10 +1,8 @@
-import { loadGalleryIndex } from "../../lib/gallery";
-import { GalleryGrid } from "../../components/GalleryGrid";
+import { loadGalleryIndex } from "../lib/gallery";
+import { GalleryGrid } from "../components/GalleryGrid";
 
-export const metadata = { title: "Recordings — macOS Computer Use" };
-
-// Always fetch a fresh index.json -- this page is a personal dashboard over what's actually in the
-// bucket right now, not something that benefits from Next.js's default static/ISR caching.
+// Always fetch a fresh index.json -- this is a dashboard over what's actually in the bucket right
+// now, not something that benefits from Next.js's default static/ISR caching.
 export const dynamic = "force-dynamic";
 
 export default async function GalleryPage() {
@@ -20,9 +18,7 @@ export default async function GalleryPage() {
           <code>pub-*.r2.dev</code> URL) to enable this page.
         </p>
       ) : entries.length === 0 ? (
-        <p className="gallery-empty">
-          No recordings yet — run <code>tools/agent-run.ts</code> to record one.
-        </p>
+        <p className="gallery-empty">No recordings yet.</p>
       ) : (
         <GalleryGrid entries={entries} />
       )}

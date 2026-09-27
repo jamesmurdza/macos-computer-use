@@ -12,8 +12,9 @@ import { requireEnv } from "./env";
  * The functions that need R2 credentials (`client()`-based) are only ever called from CLI tooling
  * (tools/agent-run.ts, src/lib/gallery.ts's `rebuildGalleryIndex()`) -- never from the Next.js web
  * app, which deliberately never holds R2 secret credentials at all. `publicRunArtifactUrl()` is
- * the one exception: it's pure string-joining against `R2_PUBLIC_BASE_URL` (not a secret), and the
- * `/gallery` page uses it to build links to a public bucket.
+ * the one exception: it's pure string-joining against `R2_PUBLIC_BASE_URL` (not a secret), used by
+ * tools/agent-run.ts to print working links. The completely separate `gallery/` app (its own repo
+ * root, its own Vercel deployment) does the equivalent join itself rather than importing this file.
  */
 
 /**
