@@ -127,6 +127,15 @@ interface UiWindowNode {
   /** The window's own on-screen rectangle. Used to filter a deeply-nested web page's accessibility
    * tree down to roughly what's actually visible right now -- see pruneElement()'s viewport param. */
   bounds?: { x: number; y: number; width: number; height: number };
+  /** Stacking order -- higher is more frontmost. Verified against a real sandbox (two TextEdit
+   * windows, cycling focus with cmd+`): the newly-focused window's z_index becomes the highest of
+   * the group every time, so this is a reliable "which one is actually on top" signal. There's no
+   * separate `main`/`key`/`focused` boolean in the raw data -- this is the only field that carries
+   * it. Used to tell apart same-owner windows (see the `frontmost` output field below) -- without
+   * it, an app with several windows open (e.g. Preview after repeated cmd+shift+s "Duplicate"
+   * calls leaves "fw9.pdf", "fw9 copy", "fw9 copy 2" all open at once) shows them as an
+   * undifferentiated pile with no way to tell which one the next click actually lands in. */
+  z_index?: number;
   children?: UiElementNode[];
 }
 
@@ -336,12 +345,20 @@ function summarizeTree(raw: UiTreeResponse, opts: UiSummaryOptions = {}): string
   // Every on-screen window that isn't OS chrome — dialogs and sheets included, and blank/not-yet-
   // rendered windows too (an empty window of the frontmost app is itself a useful signal).
   const activeApp = (raw.applications ?? []).find((a) => a.info.active)?.info.name;
-  const windows = (raw.windows ?? [])
-    .filter((w) => w.is_on_screen && !SYSTEM_CHROME_OWNERS.has(w.owner))
+  const rawWindows = (raw.windows ?? []).filter((w) => w.is_on_screen && !SYSTEM_CHROME_OWNERS.has(w.owner));
+  // The single most-frontmost window across everything shown, by z_index (higher = more on top --
+  // verified against a real sandbox, see the UiWindowNode.z_index doc comment). Marked explicitly
+  // on the output below so the model never has to compare numbers itself to answer "which window
+  // am I actually looking at" -- it just reads `frontmost: true`.
+  const topZIndex = Math.max(-Infinity, ...rawWindows.map((w) => w.z_index ?? -Infinity));
+  const windows = rawWindows
     .map((w) => ({
       app: w.owner,
       role: w.role,
       title: w.name || undefined,
+      // Only emitted when there's more than one window to disambiguate -- see below.
+      frontmost: undefined as boolean | undefined,
+      zIndex: w.z_index,
       elements: sortModalFirst(
         (w.children ?? []).map((c) => pruneElement(c, 0, maxDepth, reliableViewport(w))).filter((c): c is PrunedElement => c !== null),
       ),
@@ -354,15 +371,37 @@ function summarizeTree(raw: UiTreeResponse, opts: UiSummaryOptions = {}): string
     // Safari's content, long before ever reaching Preview's dialog -- cmd+o had genuinely worked,
     // but neither the agent nor this code could see it, and repeated retries kept "failing" the
     // exact same way. The active/frontmost app's own window is the one most likely to be what a
-    // "what's on screen" read actually needs, so it goes first; everything else sorts by ascending
+    // "what's on screen" read actually needs, so it goes first; ties within the same app are then
+    // broken by z_index (higher/more-frontmost first) -- real, observed failure mode without this:
+    // repeated cmd+shift+s "Duplicate" calls in Preview leave several same-owner windows
+    // ("fw9.pdf", "fw9 copy", "fw9 copy 2") in the array with no way to tell which one a click
+    // actually lands in, and an agent would spiral clicking File-menu items and closing windows
+    // trying to find the "real" one. Everything else (different apps) still sorts by ascending
     // serialized size, so small, information-dense windows (dialogs, alerts) outlast large,
     // mostly-irrelevant background ones when the cap does have to cut something.
     .sort((a, b) => {
       const aActive = a.app === activeApp ? 0 : 1;
       const bActive = b.app === activeApp ? 0 : 1;
       if (aActive !== bActive) return aActive - bActive;
+      if (a.app === b.app && a.zIndex !== b.zIndex) return (b.zIndex ?? -Infinity) - (a.zIndex ?? -Infinity);
       return JSON.stringify(a.elements).length - JSON.stringify(b.elements).length;
     });
+  // Mark the single globally-topmost window explicitly, but only when there's actually more than
+  // one on-screen window to disambiguate -- a lone window is unambiguously "the" window, and
+  // spelling out `frontmost`/`zIndex` on every single-window read would just be noise.
+  if (windows.length > 1) {
+    let marked = false;
+    for (const w of windows) {
+      if (!marked && w.zIndex === topZIndex) {
+        w.frontmost = true;
+        marked = true;
+      }
+    }
+  } else {
+    for (const w of windows) {
+      (w as { zIndex?: number }).zIndex = undefined;
+    }
+  }
 
   const shownOwners = new Set(windows.map((w) => w.app));
   const noWindow = (raw.applications ?? [])
@@ -468,11 +507,34 @@ export interface UiClickOptions {
    * matches; ignored for menu-bar items (which have no meaningful "left of the label" target).
    */
   clickOffsetLeftPx?: number;
+  /**
+   * Instead of resolving ambiguity with `index`, pick whichever match is geometrically closest to
+   * this other on-screen label -- e.g. `label: "(empty text field)"`, `nearLabel: "5 Address"`
+   * clicks whichever empty field sits nearest the real "Address" text, by straight-line distance
+   * between their centers. This is the fix for a real, repeatedly-observed failure mode: a form
+   * with many fields sharing one generic label (a PDF's "(empty text field)") has to be
+   * disambiguated by `index` today, but that index means "the Nth field *still* empty" -- it
+   * silently points at a different physical field every time an earlier one gets filled in, which
+   * is how text has ended up in the wrong line over and over. A field's on-screen position never
+   * moves regardless of fill state, so anchoring to a stable nearby label (a section's printed
+   * text, which is never itself a fillable field) sidesteps the whole class of bug. If `nearLabel`
+   * itself doesn't resolve to exactly one element, that's returned as the error -- fix the anchor,
+   * not the original label. Only applies when `label`/`role` still match more than one candidate.
+   */
+  nearLabel?: string;
 }
 
 export interface UiActionResult {
   status: "ok" | "not-found" | "ambiguous" | "error";
   message?: string;
+  /** typeText() only: whether the typed text was actually found in some on-screen element's
+   * `value` afterward. `false` (with `message` explaining) means the keystrokes were sent but the
+   * text doesn't appear anywhere -- likely typed into a control with no readable value (a
+   * checkbox), lost focus before typing happened, or landed somewhere this summary already
+   * truncated away. Absent (not `false`) for every other action, and for typeText itself when
+   * verification did find the text -- so existing callers checking `status === "ok"` are
+   * unaffected either way; this is an additive signal, not a new failure state. */
+  verified?: boolean;
   /** For an ambiguous match: the matching elements, so the model can retry with `index`. */
   candidates?: string[];
   /** The on-screen summary right after the action, so the model can decide the next step without
@@ -673,6 +735,22 @@ export async function clickElement(sandbox: SandboxHandle, opts: UiClickOptions)
   if (matches.length === 0) {
     return withScreen(sandbox, { status: "not-found", message: `no on-screen element matching label "${opts.label}"${opts.role ? ` (role "${opts.role}")` : ""}` });
   }
+  if (opts.nearLabel && matches.length > 1) {
+    const anchors = matchElements(collectClickable(raw, opts.app), undefined, opts.nearLabel);
+    if (anchors.length === 0) {
+      return withScreen(sandbox, { status: "not-found", message: `nearLabel "${opts.nearLabel}" not found on screen -- can't anchor the search` });
+    }
+    if (anchors.length > 1) {
+      return withScreen(sandbox, {
+        status: "ambiguous",
+        message: `nearLabel "${opts.nearLabel}" itself matches ${anchors.length} elements -- make it more specific`,
+        candidates: anchors.slice(0, 10).map((m, i) => `${i + 1}) ${m.role} "${m.label}"`),
+      });
+    }
+    const anchor = anchors[0];
+    const distance = (m: FoundElement) => Math.hypot(m.cx - anchor.cx, m.cy - anchor.cy);
+    matches = [[...matches].sort((a, b) => distance(a) - distance(b))[0]];
+  }
   // Silently break the single most common tie before it ever reaches the model: an AppKit
   // button/cell/row and its own nested text label routinely expose the exact same accessible name
   // (e.g. a sidebar's "New Note" row is both a clickable cell *and* a plain text child both named
@@ -720,9 +798,37 @@ export async function clickElement(sandbox: SandboxHandle, opts: UiClickOptions)
 }
 
 /** Type text into whatever control currently has keyboard focus (click it first). */
+/** Whether any element's `value` anywhere in the tree contains `text` as a substring. Walks the
+ * raw windows directly (not the pruned/clickable views) so this can't miss something those views
+ * happen to filter out. */
+function treeContainsValue(raw: UiTreeResponse, text: string): boolean {
+  const walk = (node: UiElementNode): boolean => {
+    if (typeof node.value === "string" && node.value.includes(text)) return true;
+    return (node.children ?? []).some(walk);
+  };
+  return (raw.windows ?? []).some((w) => (w.children ?? []).some(walk));
+}
+
+/** Type text into whatever control currently has keyboard focus (click it first). Settles, then
+ * re-reads the tree to confirm the text actually landed somewhere on screen -- see
+ * UiActionResult.verified's doc comment for why this exists and what a `false` does (and doesn't)
+ * mean. Verified against a real sandbox: typing into a field that never had focus (e.g. right
+ * after a click that landed on a non-focusable control) leaves no trace of the text anywhere in
+ * the tree, which is exactly the gap this catches -- the keystroke call itself never errors either
+ * way, so without this, "ok" was the only signal a caller ever got, whether the text landed or not.
+ */
 export async function typeText(sandbox: SandboxHandle, text: string): Promise<UiActionResult> {
   await sandbox.keyboard.type(text);
-  return withScreen(sandbox, { status: "ok" });
+  await sleep(600); // settle, matching withScreen()'s own post-"ok" delay
+  const raw = (await sandbox.uiTree()) as UiTreeResponse;
+  const screen = summarizeTree(raw);
+  if (treeContainsValue(raw, text)) return { status: "ok", screen };
+  return {
+    status: "ok",
+    verified: false,
+    message: `typed "${text}" but it doesn't appear in any on-screen field's value -- it may not have landed where intended`,
+    screen,
+  };
 }
 
 /** Press a key or shortcut, e.g. "return", "escape", "tab", "cmd+shift+n", "cmd+r". */

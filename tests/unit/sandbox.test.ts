@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SandboxHandle } from "../../src/lib/sandbox-handle.js";
-import { clickElement, openApp, screenshotUrl, uiTreeSummary } from "../../src/lib/sandbox.js";
+import { clickElement, openApp, screenshotUrl, typeText, uiTreeSummary } from "../../src/lib/sandbox.js";
 
 /** A trimmed real `uiTree()` response: one background app, one real window with nested elements. */
 function fakeSandbox(uiTree: unknown): SandboxHandle {
@@ -511,6 +511,41 @@ describe("uiTreeSummary", () => {
     expect(json).toContain('"title":"Open"');
     expect(json).toContain('"label":"fw9.pdf"');
   });
+
+  it("marks the single most-frontmost window (highest z_index) among several same-owner windows", async () => {
+    // Verified against a real sandbox: repeated cmd+shift+s ("Duplicate") in Preview leaves
+    // several windows open at once, all owned by "Preview" -- "fw9.pdf", "fw9 copy", and an
+    // "Unnamed Window" (a stray color-picker/toolbar window, confirmed the real cause of one
+    // agent run spiraling trying to figure out which window it was actually looking at). The raw
+    // gateway data's own z_index (higher = more frontmost, confirmed by cycling focus between two
+    // real TextEdit windows and watching the numbers swap) is the only signal that tells them
+    // apart -- this pins down that it's surfaced and that exactly one window ends up marked.
+    const raw = {
+      applications: [{ info: { name: "Preview", active: true }, windows: [1, 2, 3] }],
+      windows: [
+        { name: "fw9.pdf", owner: "Preview", role: "app", is_on_screen: true, z_index: 7, children: [] },
+        { name: "fw9 copy", owner: "Preview", role: "app", is_on_screen: true, z_index: 8, children: [] },
+        { name: "Unnamed Window", owner: "Preview", role: "app", is_on_screen: true, z_index: 9, children: [] },
+      ],
+    };
+    const parsed = JSON.parse(await uiTreeSummary(fakeSandbox(raw)));
+    const previewWindows = parsed.windows.filter((w: { app: string }) => w.app === "Preview");
+    expect(previewWindows).toHaveLength(3);
+    expect(previewWindows.filter((w: { frontmost?: boolean }) => w.frontmost)).toHaveLength(1);
+    expect(previewWindows[0]).toMatchObject({ title: "Unnamed Window", frontmost: true, zIndex: 9 });
+    // Sorted by z_index descending within the tied-active-app group, not left in gateway order.
+    expect(previewWindows.map((w: { title: string }) => w.title)).toEqual(["Unnamed Window", "fw9 copy", "fw9.pdf"]);
+  });
+
+  it("omits frontmost/zIndex entirely for a lone window -- nothing to disambiguate", async () => {
+    const raw = {
+      applications: [{ info: { name: "Preview", active: true }, windows: [1] }],
+      windows: [{ name: "fw9.pdf", owner: "Preview", role: "app", is_on_screen: true, z_index: 7, children: [] }],
+    };
+    const json = await uiTreeSummary(fakeSandbox(raw));
+    expect(json).not.toContain("frontmost");
+    expect(json).not.toContain("zIndex");
+  });
 });
 
 describe("clickElement", () => {
@@ -640,6 +675,74 @@ describe("clickElement", () => {
 
     expect(result.status).toBe("ok");
     expect(click).toHaveBeenCalledWith(Math.round((284 + 347) / 2), expect.any(Number));
+  });
+
+  it("with nearLabel, picks the ambiguous match geometrically closest to a stable anchor label", async () => {
+    // The actual fix for the session's most-repeated real bug: a PDF form's blank fields all
+    // share one generic label ("(empty text field)"), so disambiguating by `index` means "the Nth
+    // field still empty" -- which points at a different physical field every time an earlier one
+    // gets filled in. Verified end-to-end against a real W-9 form (nearLabel: "5 Address" and
+    // nearLabel: "6 City" both landed text correctly, confirmed via typeText's own verification).
+    // This test pins the geometry: two empty fields, an anchor label sitting right next to one of
+    // them -- clickElement must pick that one, not just the first/lowest-index match.
+    const farField = { name: null, role: "AXTextField", description: null, value: null, bbox: [500, 500, 700, 515] };
+    const nearField = { name: null, role: "AXTextField", description: null, value: null, bbox: [280, 240, 480, 255] };
+    const anchor = { name: "5 Address (number, street, and apt. or suite no.)", role: "AXStaticText", role_description: "text", bbox: [260, 220, 500, 235] };
+    const { sandbox, click } = fakeClickSandbox([windowWith("Preview", [farField, anchor, nearField])]);
+
+    const result = await clickElement(sandbox, { label: "(empty text field)", role: "text field", nearLabel: "5 Address" });
+
+    expect(result.status).toBe("ok");
+    // Center of nearField, not farField -- proves distance-to-anchor won, not array/tree order.
+    expect(click).toHaveBeenCalledWith(Math.round((280 + 480) / 2), Math.round((240 + 255) / 2));
+  });
+
+  it("nearLabel reports not-found (naming the anchor) when the anchor itself isn't on screen", async () => {
+    const field1 = { name: null, role: "AXTextField", description: null, value: null, bbox: [280, 240, 480, 255] };
+    const field2 = { name: null, role: "AXTextField", description: null, value: null, bbox: [500, 500, 700, 515] };
+    const { sandbox } = fakeClickSandbox([windowWith("Preview", [field1, field2])]);
+
+    const result = await clickElement(sandbox, { label: "(empty text field)", role: "text field", nearLabel: "5 Address" });
+
+    expect(result.status).toBe("not-found");
+    expect(result.message).toContain("5 Address");
+  });
+});
+
+describe("typeText", () => {
+  /** A sandbox whose `keyboard.type` is a no-op spy and `uiTree()` returns a fixed tree
+   * afterward -- for exercising typeText()'s post-type verification without a real sandbox. */
+  function fakeTypeSandbox(uiTree: unknown) {
+    const type = vi.fn(async () => {});
+    const sandbox = { keyboard: { type }, uiTree: async () => uiTree } as unknown as SandboxHandle;
+    return { sandbox, type };
+  }
+
+  it("leaves verified unset when the typed text actually shows up in some field's value", async () => {
+    const raw = { windows: [windowWith("Preview", [{ name: null, role: "AXTextField", role_description: "text field", value: "123 Market Street", bbox: [0, 0, 100, 20] }])] };
+    const { sandbox, type } = fakeTypeSandbox(raw);
+
+    const result = await typeText(sandbox, "123 Market Street");
+
+    expect(type).toHaveBeenCalledWith("123 Market Street");
+    expect(result.status).toBe("ok");
+    expect(result.verified).toBeUndefined();
+  });
+
+  it("flags verified: false when the typed text lands nowhere on screen", async () => {
+    // Regression, verified against a real sandbox: a checkbox click (via clickOffsetLeftPx) drops
+    // keyboard focus out of any text field entirely -- typing right after it previously landed
+    // silently nowhere, with the old blind "ok" the only signal a caller ever got either way. This
+    // is the actual gap that let a real agent run confidently report typing "San Francisco, CA
+    // 94103" into the City field when the saved PDF's field was provably empty.
+    const raw = { windows: [windowWith("Preview", [{ name: null, role: "AXTextField", role_description: "text field", value: "Rivera Consulting LLC", bbox: [0, 0, 100, 20] }])] };
+    const { sandbox } = fakeTypeSandbox(raw);
+
+    const result = await typeText(sandbox, "SHOULD_NOT_LAND_ANYWHERE");
+
+    expect(result.status).toBe("ok"); // the keystrokes really were sent -- this isn't a new failure state
+    expect(result.verified).toBe(false);
+    expect(result.message).toContain("SHOULD_NOT_LAND_ANYWHERE");
   });
 });
 
