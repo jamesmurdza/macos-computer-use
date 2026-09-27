@@ -451,49 +451,112 @@ export interface SetResolutionResult {
   size?: { width: number; height: number };
 }
 
-/** The exact label System Settings > Displays shows for a resolution option, e.g. "1280 × 720". */
-function resolutionLabel(width: number, height: number): string {
-  return `${width} × ${height}`;
+const RESIZE_SCRIPT_PATH = "/tmp/macos-computer-use-resize.swift";
+
+/**
+ * Executed via `swift <path> ...` over SSH -- no GUI, no third-party tool install (Xcode's
+ * command-line tools, already required by this product, ship `swift`).
+ *
+ * A bare `CGDisplaySetDisplayMode(display, mode, nil)` call reports `.success` but silently does
+ * nothing on these sandboxes (verified) -- macOS's own Displays pane, and tools like
+ * `displayplacer`, actually go through a `CGBeginDisplayConfiguration` /
+ * `CGConfigureDisplayWithDisplayMode` / `CGCompleteDisplayConfiguration` transaction, which does
+ * take effect immediately (also verified, both via `displayInfo()` and an independent
+ * `screencapture`+`sips` pixel check).
+ */
+const RESIZE_DISPLAY_SWIFT = `
+import CoreGraphics
+import Foundation
+
+let args = CommandLine.arguments
+let mainDisplay = CGMainDisplayID()
+
+func allModes() -> [CGDisplayMode] {
+    let options = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
+    guard let modes = CGDisplayCopyAllDisplayModes(mainDisplay, options) as? [CGDisplayMode] else { return [] }
+    return modes
+}
+
+if args.count >= 2 && args[1] == "list" {
+    for mode in allModes() where mode.isUsableForDesktopGUI() {
+        print("\\(mode.width)x\\(mode.height)")
+    }
+    exit(0)
+}
+
+guard args.count >= 3, let w = Int32(args[1]), let h = Int32(args[2]) else {
+    print("USAGE")
+    exit(1)
+}
+
+guard let target = allModes().first(where: { $0.width == Int(w) && $0.height == Int(h) && $0.isUsableForDesktopGUI() }) else {
+    print("NOT_FOUND")
+    exit(2)
+}
+
+var configRef: CGDisplayConfigRef?
+guard CGBeginDisplayConfiguration(&configRef) == .success, let config = configRef else {
+    print("BEGIN_FAILED")
+    exit(3)
+}
+let configureErr = CGConfigureDisplayWithDisplayMode(config, mainDisplay, target, nil)
+let completeErr = CGCompleteDisplayConfiguration(config, .permanently)
+if configureErr == .success && completeErr == .success {
+    print("OK \\(target.width)x\\(target.height)")
+} else {
+    print("FAILED configure=\\(configureErr.rawValue) complete=\\(completeErr.rawValue)")
+    exit(4)
+}
+`;
+
+async function uploadResizeScript(sandbox: SandboxHandle): Promise<void> {
+  await sandbox.upload(new TextEncoder().encode(RESIZE_DISPLAY_SWIFT), RESIZE_SCRIPT_PATH);
+}
+
+/** Every usable display resolution the sandbox's virtual display currently offers (observed:
+ * 11 modes from 800x600 up to 1920x1080, a much wider set than System Settings' default short
+ * list of 3). */
+export async function listDisplayResolutions(sandbox: SandboxHandle): Promise<{ width: number; height: number }[]> {
+  await uploadResizeScript(sandbox);
+  const result = await sandbox.execSsh(`swift ${RESIZE_SCRIPT_PATH} list`, 30_000);
+  if (result.exitCode !== 0) throw new Error(`Listing display resolutions failed: ${result.stderr || result.stdout}`);
+  return result.stdout
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [w, h] = line.split("x").map(Number);
+      return { width: w, height: h };
+    });
 }
 
 /**
- * Change the sandbox's screen resolution via System Settings > Displays -- the same way a person
- * would, using the same click_element/uiTree primitives the agent's own tools use.
+ * Change the sandbox's screen resolution directly via CoreGraphics -- no GUI automation, no
+ * System Settings, no click_element. Runs a tiny Swift script over SSH (see
+ * `RESIZE_DISPLAY_SWIFT`) that finds a usable `CGDisplayMode` matching `width`x`height` and
+ * applies it in a display-configuration transaction.
  *
  * These sandboxes run macOS as an Apple Virtualization.framework VM (`Model Identifier:
  * VirtualMac2,1`), not bare-metal hardware, but the guest genuinely re-renders its framebuffer at
- * whatever resolution is picked here -- confirmed against a real sandbox with both
- * `sandbox.displayInfo()` and an actual `screencapture`, not just the Displays pane's own label.
- * There is no gateway API or CLI tool for this (`displayplacer`/`m1ddc`/`ddcctl` are not
- * installed in the guest, and no undocumented `/display/resize`-style endpoint exists on the
- * gateway -- both were checked directly), so GUI automation is the only way.
- *
- * If `width`x`height` isn't in the short list System Settings shows by default (observed default:
- * 1920x1080, 1600x900, 1280x720), this flips on "Show all resolutions" and looks again. If macOS
- * ever shows a "Keep this configuration?"-style confirmation dialog (it did not in testing on
- * this VM display, but a physical display normally would), this clicks through it.
+ * whatever resolution is set here -- confirmed against a real sandbox with both
+ * `sandbox.displayInfo()` and an actual `screencapture`+`sips` pixel check, immediately and
+ * stably (re-checked 3s later). There is no gateway API for this (`/display/resize` and similar
+ * guesses all 404) and no pre-installed CLI tool (`displayplacer`/`m1ddc`/`ddcctl` are absent) --
+ * this SSH+CoreGraphics approach was chosen over driving System Settings' Displays pane by click
+ * because it's faster (~1s vs ~20s), more robust (no locale/OS-version-dependent UI to find), and
+ * exposes every mode the virtual display actually supports rather than only the 3 System Settings
+ * shows by default.
  */
 export async function setDisplayResolution(sandbox: SandboxHandle, width: number, height: number): Promise<SetResolutionResult> {
-  const label = resolutionLabel(width, height);
-  await runAppleScript(sandbox, `do shell script "open x-apple.systempreferences:com.apple.preference.displays"`);
-  await sleep(2000);
+  await uploadResizeScript(sandbox);
+  const result = await sandbox.execSsh(`swift ${RESIZE_SCRIPT_PATH} ${width} ${height}`, 30_000);
+  const out = result.stdout.trim();
 
-  let result = await clickElement(sandbox, { label, timeoutSeconds: 3 });
-  if (result.status === "not-found") {
-    // Not in the default short list -- reveal the full set and retry once.
-    await clickElement(sandbox, { label: "Show all resolutions", timeoutSeconds: 3 });
-    await sleep(500);
-    result = await clickElement(sandbox, { label, timeoutSeconds: 3 });
+  if (out === "NOT_FOUND") {
+    return { status: "not-found", message: `no usable display mode ${width}x${height} on this sandbox` };
   }
-  if (result.status !== "ok") {
-    return { status: result.status === "not-found" ? "not-found" : "error", message: result.message };
-  }
-  await sleep(1500);
-
-  // Best-effort: click through a confirmation dialog if macOS shows one.
-  for (const confirmLabel of ["Keep", "Keep Changes", "Confirm"]) {
-    const r = await clickElement(sandbox, { label: confirmLabel, timeoutSeconds: 1 });
-    if (r.status === "ok") break;
+  if (!out.startsWith("OK")) {
+    return { status: "error", message: out || result.stderr || `swift exited ${result.exitCode}` };
   }
 
   // Defensive: SandboxHandle.displayInfo() is typed as `{width,height}` (matching
