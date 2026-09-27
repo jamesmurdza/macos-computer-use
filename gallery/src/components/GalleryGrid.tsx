@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { GalleryEntryResolved } from "../lib/gallery";
 import { formatCost, formatDate, formatDuration } from "../lib/gallery";
 import { captionAt, parseCaptions, type CaptionEntry } from "../lib/captions";
 
 const PLAYBACK_SPEEDS = [0.5, 1, 1.5, 2, 4];
 const DEFAULT_SPEED = 2;
+const ALL_MODELS = "all";
 
 /**
  * Every run gets a real permalink at `/runs/<runId>` (see that route's page.tsx -- it renders this
@@ -24,6 +25,15 @@ export function GalleryGrid({ entries, initialRunId }: { entries: GalleryEntryRe
   const [selected, setSelected] = useState<GalleryEntryResolved | null>(
     () => entries.find((e) => e.runId === initialRunId) ?? null,
   );
+  const [modelFilter, setModelFilter] = useState<string>(ALL_MODELS);
+
+  // Sorted, deduped -- whatever models actually show up in this gallery, not a fixed list, so it
+  // never drifts out of sync with what's really there (new models just start appearing on their
+  // own). Permalink lookups below (initial state, popstate) deliberately search the *unfiltered*
+  // `entries`, not this -- a direct link to a run should always open it regardless of which
+  // filter happens to be selected.
+  const models = useMemo(() => Array.from(new Set(entries.map((e) => e.model).filter(Boolean))).sort(), [entries]);
+  const visibleEntries = modelFilter === ALL_MODELS ? entries : entries.filter((e) => e.model === modelFilter);
 
   useEffect(() => {
     document.title = selected ? `${selected.description} — Recordings` : "Recordings";
@@ -50,22 +60,45 @@ export function GalleryGrid({ entries, initialRunId }: { entries: GalleryEntryRe
 
   return (
     <>
-      <div className="gallery-grid">
-        {entries.map((e) => (
-          <button key={e.runId} className="gallery-card" onClick={() => open(e)}>
-            <span className="gallery-thumb">
-              {/* Plain <img>, not next/image: external R2 URLs, no image-domain config needed for a personal tool */}
-              <img src={e.thumbnailUrl} alt="" loading="lazy" onError={(ev) => (ev.currentTarget.style.visibility = "hidden")} />
-              <span className="gallery-duration">{formatDuration(e.durationMs)}</span>
-              {e.status === "error" && <span className="gallery-badge-incomplete">Incomplete</span>}
-            </span>
-            <span className="gallery-meta">
-              <span className="gallery-desc">{e.description}</span>
-              <span className="gallery-date">{formatDate(e.date)}</span>
-            </span>
-          </button>
-        ))}
+      <div className="gallery-header">
+        <h1 className="gallery-title">Recordings</h1>
+        {models.length > 1 && (
+          <select
+            className="gallery-model-filter"
+            value={modelFilter}
+            onChange={(ev) => setModelFilter(ev.target.value)}
+            aria-label="Filter by model"
+          >
+            <option value={ALL_MODELS}>All models</option>
+            {models.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
+
+      {visibleEntries.length === 0 ? (
+        <p className="gallery-empty">No recordings for this model.</p>
+      ) : (
+        <div className="gallery-grid">
+          {visibleEntries.map((e) => (
+            <button key={e.runId} className="gallery-card" onClick={() => open(e)}>
+              <span className="gallery-thumb">
+                {/* Plain <img>, not next/image: external R2 URLs, no image-domain config needed for a personal tool */}
+                <img src={e.thumbnailUrl} alt="" loading="lazy" onError={(ev) => (ev.currentTarget.style.visibility = "hidden")} />
+                <span className="gallery-duration">{formatDuration(e.durationMs)}</span>
+                {e.status === "error" && <span className="gallery-badge-incomplete">Incomplete</span>}
+              </span>
+              <span className="gallery-meta">
+                <span className="gallery-desc">{e.description}</span>
+                <span className="gallery-date">{formatDate(e.date)}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {selected && <RunModal key={selected.runId} entry={selected} onClose={close} />}
     </>

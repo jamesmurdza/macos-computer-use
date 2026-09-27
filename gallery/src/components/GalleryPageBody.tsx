@@ -10,17 +10,24 @@ import { GalleryGrid } from "./GalleryGrid";
 export async function GalleryPageBody({ initialRunId }: { initialRunId?: string }) {
   const { configured, entries } = await loadGalleryIndex();
 
+  // The title lives inside GalleryGrid (alongside the model filter dropdown -- see there) once
+  // there are entries to show; these two early-out states never render that dropdown, so they
+  // need their own copy of it.
   return (
     <main className="gallery">
-      <h1 className="gallery-title">Recordings</h1>
-
       {!configured ? (
-        <p className="gallery-empty">
-          Set <code>CF_PUBLIC_BASE_URL</code> to your bucket&apos;s public domain (e.g. a{" "}
-          <code>pub-*.r2.dev</code> URL) to enable this page.
-        </p>
+        <>
+          <h1 className="gallery-title">Recordings</h1>
+          <p className="gallery-empty">
+            Set <code>CF_PUBLIC_BASE_URL</code> to your bucket&apos;s public domain (e.g. a{" "}
+            <code>pub-*.r2.dev</code> URL) to enable this page.
+          </p>
+        </>
       ) : entries.length === 0 ? (
-        <p className="gallery-empty">No recordings yet.</p>
+        <>
+          <h1 className="gallery-title">Recordings</h1>
+          <p className="gallery-empty">No recordings yet.</p>
+        </>
       ) : (
         <GalleryGrid entries={entries} initialRunId={initialRunId} />
       )}
