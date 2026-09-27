@@ -7,6 +7,7 @@ function fakeHandle(sandboxId: string): SandboxHandle {
     vncUrl: `https://gw/vnc?sandbox=${sandboxId}`,
     host: "mm001",
     uiTree: async () => ({}),
+    displayInfo: async () => ({ width: 1920, height: 1080 }),
     execSsh: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
     upload: async () => {},
     mouse: { click: async () => {} },

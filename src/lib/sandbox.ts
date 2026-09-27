@@ -444,3 +444,64 @@ export async function takeScreenshot(sandbox: SandboxHandle, opts: ScreenshotOpt
   if (!res.ok) throw new Error(`Screenshot failed: HTTP ${res.status} ${await res.text()}`);
   return new Uint8Array(await res.arrayBuffer());
 }
+
+export interface SetResolutionResult {
+  status: "ok" | "not-found" | "error";
+  message?: string;
+  size?: { width: number; height: number };
+}
+
+/** The exact label System Settings > Displays shows for a resolution option, e.g. "1280 × 720". */
+function resolutionLabel(width: number, height: number): string {
+  return `${width} × ${height}`;
+}
+
+/**
+ * Change the sandbox's screen resolution via System Settings > Displays -- the same way a person
+ * would, using the same click_element/uiTree primitives the agent's own tools use.
+ *
+ * These sandboxes run macOS as an Apple Virtualization.framework VM (`Model Identifier:
+ * VirtualMac2,1`), not bare-metal hardware, but the guest genuinely re-renders its framebuffer at
+ * whatever resolution is picked here -- confirmed against a real sandbox with both
+ * `sandbox.displayInfo()` and an actual `screencapture`, not just the Displays pane's own label.
+ * There is no gateway API or CLI tool for this (`displayplacer`/`m1ddc`/`ddcctl` are not
+ * installed in the guest, and no undocumented `/display/resize`-style endpoint exists on the
+ * gateway -- both were checked directly), so GUI automation is the only way.
+ *
+ * If `width`x`height` isn't in the short list System Settings shows by default (observed default:
+ * 1920x1080, 1600x900, 1280x720), this flips on "Show all resolutions" and looks again. If macOS
+ * ever shows a "Keep this configuration?"-style confirmation dialog (it did not in testing on
+ * this VM display, but a physical display normally would), this clicks through it.
+ */
+export async function setDisplayResolution(sandbox: SandboxHandle, width: number, height: number): Promise<SetResolutionResult> {
+  const label = resolutionLabel(width, height);
+  await runAppleScript(sandbox, `do shell script "open x-apple.systempreferences:com.apple.preference.displays"`);
+  await sleep(2000);
+
+  let result = await clickElement(sandbox, { label, timeoutSeconds: 3 });
+  if (result.status === "not-found") {
+    // Not in the default short list -- reveal the full set and retry once.
+    await clickElement(sandbox, { label: "Show all resolutions", timeoutSeconds: 3 });
+    await sleep(500);
+    result = await clickElement(sandbox, { label, timeoutSeconds: 3 });
+  }
+  if (result.status !== "ok") {
+    return { status: result.status === "not-found" ? "not-found" : "error", message: result.message };
+  }
+  await sleep(1500);
+
+  // Best-effort: click through a confirmation dialog if macOS shows one.
+  for (const confirmLabel of ["Keep", "Keep Changes", "Confirm"]) {
+    const r = await clickElement(sandbox, { label: confirmLabel, timeoutSeconds: 1 });
+    if (r.status === "ok") break;
+  }
+
+  // Defensive: SandboxHandle.displayInfo() is typed as `{width,height}` (matching
+  // use-computer-sdk's own .d.ts), but a real SDK-created sandbox actually returns the gateway's
+  // raw `{ success, size: { width, height } }` at runtime -- verified directly, see the interface
+  // doc comment in sandbox-handle.ts. Accept either shape.
+  const info = (await sandbox.displayInfo()) as unknown as { width?: number; height?: number; size?: { width: number; height: number } };
+  const size = info.size ?? (info.width !== undefined && info.height !== undefined ? { width: info.width, height: info.height } : undefined);
+  if (size?.width === width && size?.height === height) return { status: "ok", size };
+  return { status: "error", message: `resolution did not change (now ${size?.width}x${size?.height})`, size };
+}

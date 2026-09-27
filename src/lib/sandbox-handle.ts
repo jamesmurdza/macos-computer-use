@@ -19,6 +19,17 @@ export interface SandboxHandle {
   readonly vncUrl: string;
   readonly host: string;
   uiTree(): Promise<unknown>;
+  /**
+   * `use-computer-sdk`'s own .d.ts declares this shape (`{width,height}`), which is why it's
+   * declared this way here too (so a real `MacOSSandbox` keeps structurally satisfying this
+   * interface). Caution: verified against a real sandbox, the SDK's own `MacOSSandbox` instance
+   * does NOT actually return this shape at runtime -- it returns the gateway's raw
+   * `{ success, size: { width, height } }` unmodified, which does not match its own declared
+   * type. `attachSandbox()` below normalizes to the declared `{width,height}` shape, but any
+   * caller going through a real SDK-created sandbox must defensively check for a nested `size`
+   * too (see `setDisplayResolution` in sandbox.ts).
+   */
+  displayInfo(): Promise<{ width: number; height: number }>;
   execSsh(command: string, timeoutMs?: number): Promise<ExecResult>;
   upload(data: Uint8Array, remotePath: string): Promise<void>;
   mouse: { click(x: number, y: number): Promise<void> };
@@ -105,6 +116,13 @@ export function attachSandbox(descriptor: SandboxDescriptor): SandboxHandle {
     vncUrl: descriptor.vncUrl,
     host: descriptor.host,
     uiTree: () => call("/display/windows"),
+    async displayInfo() {
+      // Normalize the gateway's raw `{ success, size: { width, height } }` to the declared
+      // `{width,height}` shape -- see the interface's doc comment for why this differs from what
+      // a real SDK-created MacOSSandbox actually returns at runtime.
+      const d = await call<{ size?: { width: number; height: number }; width?: number; height?: number }>("/display/info");
+      return { width: d.size?.width ?? d.width ?? 0, height: d.size?.height ?? d.height ?? 0 };
+    },
     async execSsh(command, timeoutMs = 120_000) {
       const d = await postJSON<{ stdout?: string; stderr?: string; exit_code?: number; return_code?: number; returncode?: number }>(
         "/exec",

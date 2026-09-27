@@ -26,6 +26,9 @@ Location: `tests/integration/`
 - `sandbox-handle.int.test.ts` — the load-bearing test for the whole stateless design: proves
   `attachSandbox()` reconnects to an existing sandbox using nothing but its id (no host/vncUrl
   needed), and that `withSandbox()` recreates a sandbox after an out-of-band delete.
+- `sandbox-resolution.int.test.ts` — proves `setDisplayResolution()` (src/lib/sandbox.ts) actually
+  changes the sandbox's rendered resolution (1920x1080 → 1280x720), not just the Displays pane's
+  own label.
 
 ### E2E Tests (Playwright, the web page)
 Command: `npm run test:e2e:web` (needs a real sandbox + `ANTHROPIC_API_KEY` for the full agent-turn test)
@@ -62,3 +65,25 @@ Command: `npm test` (unit + integration + sandbox scenarios, serially) then `npm
 | JPEG screenshot (quality 80, ~100 KB) | 2-4 s |
 | PNG screenshot via SDK (1.6 MB) | 30-60 s — avoid |
 | upload + osascript (TextEdit) | 4-6 s |
+| `setDisplayResolution()` (open Displays, click, settle) | ~20 s |
+
+## Display resolution
+
+Sandboxes are Apple `Virtualization.framework` VMs (`Model Identifier: VirtualMac2,1`, `Chip:
+Apple M4 (Virtual)`), not bare-metal Mac minis, and boot at a fixed **1920x1080**. There is no
+gateway API for this (`POST .../display/resize` and similar guesses all 404) and no in-guest CLI
+(`displayplacer`/`m1ddc`/`ddcctl` are not installed) — but `System Settings > Displays` genuinely
+re-renders the framebuffer at a smaller size when you pick one, exactly like a physical Mac.
+`setDisplayResolution(sandbox, width, height)` in `src/lib/sandbox.ts` automates that pane using
+the same `clickElement`/`runAppleScript` primitives the agent's own tools use. Verified against a
+real sandbox with both `sandbox.displayInfo()` and an actual `screencapture` + `sips` pixel-size
+check — not just the pane's own label. Confirmed options in the default (non-"Show all
+resolutions") list: `1920x1080` (default), `1600x900`, `1280x720`; the helper flips on "Show all
+resolutions" and retries once if the requested size isn't in that short list.
+
+Caution: `use-computer-sdk`'s own `.d.ts` declares `MacOSSandbox.displayInfo()` as resolving to
+`{width, height}` directly, but a real sandbox actually returns the gateway's raw `{ success,
+size: { width, height } }` at runtime instead — the SDK's declared type does not match its actual
+behavior here. `SandboxHandle.displayInfo()` matches the SDK's (wrong) declared type for
+structural compatibility; anything consuming the result should defensively check for a nested
+`size` too (see `setDisplayResolution`'s own handling).
