@@ -92,51 +92,73 @@ body { margin: 0; color: var(--ink); background: var(--bg); font: 14.5px/1.55 va
   border: 1px solid rgba(255, 255, 255, .1); border-radius: 10px; padding: 7px 12px;
   font-family: var(--sans); font-size: 13px; line-height: 1.4; text-align: center;
 }
-.gallery-modal-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 6px 4px; }
+/* align-items: flex-start (not center) so the controls sit right at the top of this row -- flush
+   with the video above and level with the first line of the description -- rather than floating
+   vertically centered against however tall the text column ends up (2-4 lines depending on
+   description length + expand state). */
+.gallery-modal-meta { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 6px 4px; }
 .gallery-modal-meta-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.gallery-modal-meta .gallery-desc { -webkit-line-clamp: unset; font-size: 14px; }
-.gallery-modal-controls { display: flex; align-items: center; gap: 16px; flex: none; }
-/* Same treatment as the main app's .model-select: strip browser chrome so it reads as plain text
-   with a value, not a boxed form control -- consistent with this app's overall minimalism. */
+/* Clamped to 2 lines by default (same clamp mechanics as the card's .gallery-desc, just a larger
+   size). See DESC_TRUNCATE_THRESHOLD in GalleryGrid.tsx for the "is it long" heuristic. */
+.gallery-modal-meta .gallery-desc { font-size: 14px; }
+.gallery-modal-meta .gallery-desc.gallery-desc-expanded { -webkit-line-clamp: unset; }
+/* Descriptions long enough to need the toggle chip drop the -webkit-line-clamp box model
+   entirely and switch to a plain fixed-height (2 line-heights) block instead. Reason: with
+   -webkit-line-clamp + overflow:hidden, the browser draws its *own* "…" right at the cutoff --
+   that's a separate, unsuppressible mechanism from the `text-overflow` property (which only
+   governs single-line nowrap truncation), so it can't be turned off while still clamping to 2
+   lines. Left in place, it stacked right next to our own chip's "…" a few pixels later: two
+   truncation markers back to back. A fixed max-height clips cleanly with no ellipsis of its own,
+   leaving the chip as the only "there's more" affordance. Reserves a notch of empty space at the
+   end of every line (via padding-right) so the toggle chip, absolutely positioned into that notch,
+   lands at the end of the text's last visible line instead of overlapping it -- the usual "Show
+   more"/"See less" placement (Twitter/Medium-style), rather than a separate row underneath.
+   Expanding just lifts the max-height cap; .gallery-desc-wrap's height always matches its (in-flow)
+   text child, so the chip (bottom-right, absolute) tracks wherever that ends up. */
+.gallery-desc-wrap { position: relative; }
+.gallery-modal-meta .gallery-desc.gallery-desc-has-toggle {
+  display: block; -webkit-box-orient: unset; -webkit-line-clamp: unset;
+  line-height: 1.35; max-height: calc(1.35em * 2); padding-right: 24px;
+}
+.gallery-modal-meta .gallery-desc.gallery-desc-has-toggle.gallery-desc-expanded { max-height: none; }
+.gallery-desc-toggle {
+  position: absolute; right: 0; bottom: 1px; display: inline-flex; align-items: center; justify-content: center;
+  height: 17px; min-width: 22px; padding: 0 5px; border-radius: 5px;
+  background: var(--line-2); color: var(--ink-2); border: 0; font: inherit; font-size: 11px;
+  line-height: 1; letter-spacing: 0.5px; cursor: pointer;
+}
+.gallery-desc-toggle:hover { background: var(--line); color: var(--ink); }
+.gallery-modal-controls { display: flex; align-items: center; gap: 8px; flex: none; }
+/* Same treatment as the main app's .model-select, but sized/shaped to match .gallery-icon-button
+   next to it so the download/speed/captions trio reads as one control group, not three unrelated
+   widgets. Fixed width + centered text (rather than left-aligned with padding on both sides) --
+   a native <select> sizes its box to fit its widest option ("1.5×"), so a shorter selected value
+   like "2×" would otherwise sit left-aligned with a lopsided gap on the right. */
 .gallery-speed-select {
-  background: transparent; color: var(--ink-2); border: 0; padding: 0; margin: 0; font: inherit;
-  font-size: 12.5px; cursor: pointer; appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  width: 40px; height: 30px; padding: 0; text-align: center; text-align-last: center;
+  border-radius: 8px; background: var(--panel-2); color: var(--ink-2);
+  border: 1px solid transparent; font: inherit; font-size: 12.5px; cursor: pointer;
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
 }
-.gallery-speed-select:focus { outline: none; color: var(--ink); }
-.gallery-caption-toggle {
-  display: inline-flex; align-items: center; gap: 8px; flex: none; cursor: pointer; user-select: none;
-  font-size: 12.5px; color: var(--ink-2);
+.gallery-speed-select:hover { background: var(--line); color: var(--ink); }
+.gallery-speed-select:focus { outline: none; border-color: var(--line-2); color: var(--ink); }
+/* Icon buttons for download + captions toggle -- same footprint/shape as .gallery-speed-select so
+   all three controls line up as a matched set. .gallery-icon-button-active is the captions-on
+   state (filled/inverted, like a pressed toggle); .gallery-icon-button-error is the export-failed
+   state (amber, same language as .gallery-badge-incomplete). */
+.gallery-icon-button {
+  display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px;
+  border-radius: 8px; background: var(--panel-2); border: 1px solid transparent; color: var(--ink-2);
+  padding: 0; cursor: pointer; transition: background .15s, color .15s;
 }
-.gallery-caption-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
-.gallery-toggle-track {
-  position: relative; width: 32px; height: 19px; border-radius: 10px; background: var(--line-2);
-  transition: background .15s; flex: none;
-}
-.gallery-toggle-thumb {
-  position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .3); transition: transform .15s;
-}
-.gallery-caption-toggle input:checked + .gallery-toggle-track { background: var(--ink); }
-.gallery-caption-toggle input:checked + .gallery-toggle-track .gallery-toggle-thumb { transform: translateX(13px); }
-/* Same stripped-chrome treatment as .gallery-speed-select -- reads as a plain text action, not a
-   boxed button, consistent with the rest of this row. */
-.gallery-export-button {
-  display: inline-flex; align-items: center; gap: 7px; background: transparent; color: var(--ink-2);
-  border: 0; padding: 0; margin: 0; font: inherit; font-size: 12.5px; cursor: pointer;
-}
-.gallery-export-button:hover:not(:disabled) { color: var(--ink); }
-.gallery-export-button:disabled { cursor: default; }
+.gallery-icon-button:hover:not(:disabled) { background: var(--line); color: var(--ink); }
+.gallery-icon-button:disabled { cursor: default; opacity: .6; }
+.gallery-icon-button-active { background: var(--ink); color: var(--panel); }
+.gallery-icon-button-active:hover:not(:disabled) { background: var(--ink); color: var(--panel); }
+.gallery-icon-button-error { background: rgba(180, 83, 9, .15); color: #b45309; }
 .gallery-spinner {
-  width: 11px; height: 11px; border-radius: 50%; flex: none;
+  width: 14px; height: 14px; border-radius: 50%; flex: none;
   border: 2px solid var(--line-2); border-top-color: var(--ink-2);
   animation: gallery-spin .7s linear infinite;
 }
 @keyframes gallery-spin { to { transform: rotate(360deg); } }
-/* Sits over the video's top-right corner, not outside the modal box: .gallery-modal has
-   `overflow: auto`, which clips any absolutely-positioned child sitting outside its bounds. */
-.gallery-modal-close {
-  position: absolute; top: 24px; right: 24px; z-index: 1; width: 30px; height: 30px; display: grid; place-items: center;
-  border: 0; border-radius: 50%; background: rgba(10, 9, 8, .6); color: #fff;
-  font-size: 18px; line-height: 1; cursor: pointer;
-}
-.gallery-modal-close:hover { background: rgba(10, 9, 8, .8); }
