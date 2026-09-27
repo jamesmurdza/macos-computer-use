@@ -17,6 +17,9 @@ https://github.com/user-attachments/assets/18f4f71f-090d-4172-8bbb-d9f7a57ad7d6
 - Streams tool calls, results, and replies live as the agent works
 - Stateless server: sandboxes are created automatically and self-delete after a couple minutes of
   inactivity
+- Headless mode (`tools/agent-run.ts`): drive the agent from the CLI instead of the web app, with
+  the whole run recorded to video and logged to a timestamped JSONL file — optionally uploaded to
+  Cloudflare R2 for later review
 
 ## How the agent works
 
@@ -92,6 +95,31 @@ For a production build:
 npm run build
 npm start
 ```
+
+## Headless runs
+
+To drive the agent from the command line instead of the web app — useful for scripting, or for
+recording a session to review later:
+
+```bash
+npx tsx tools/agent-run.ts "use xcode to make and run a hello world script"
+```
+
+This creates its own sandbox, records the whole run as video (native to the use.computer gateway —
+no extra setup) and writes a timestamped JSONL log of every tool call, result, and reply.
+Everything is saved locally to `/tmp/logs/runs/<runId>/`, and — if these four extra vars are set in
+`.env` — also uploaded to a Cloudflare R2 bucket:
+
+```
+R2_ACCOUNT_ID=...
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET=...
+```
+
+Optional: `MODEL=sonnet` picks a model, `RESOLUTION=1280x720` shrinks the recorded video. Without
+the R2 vars, it still runs end-to-end and just skips the upload. See [testing.md](testing.md) for
+the JSONL log's schema and more detail.
 
 ## Test
 
