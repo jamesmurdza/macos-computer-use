@@ -519,6 +519,49 @@ describe("clickElement", () => {
     expect(result.status).toBe("ok");
     expect(click).toHaveBeenCalledWith(110, 110);
   });
+
+  it("re-activates the target's own app first when some other app is frontmost", async () => {
+    // Regression: reproduced against a real sandbox and a real agent run. A click dispatched at
+    // the exact right screen coordinates into a *background* (non-frontmost) window's control is
+    // accepted by macOS as "bring this window forward" only -- it does not also perform the
+    // control's actual action -- and clickElement has no way to detect that from the click call
+    // itself, which never errors. Concretely: the agent opened Preview's file-open dialog, then
+    // called open_app("Safari") (switching focus away for an unrelated reason), then clicked the
+    // file in that still-open dialog and its Open button -- both reported "ok", but the file never
+    // actually opened, because Preview was no longer the frontmost app when the clicks landed.
+    const raw = {
+      applications: [
+        { info: { name: "Safari", active: true }, windows: [1] },
+        { info: { name: "Preview", active: false }, windows: [1] },
+      ],
+      windows: [windowWith("Preview", [node("AXButton", "Open", [0, 0, 20, 20])])],
+    };
+    const click = vi.fn(async () => {});
+    const execSsh = vi.fn(async (_cmd: string) => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const sandbox = { uiTree: async () => raw, mouse: { click }, upload: async () => {}, execSsh } as unknown as SandboxHandle;
+
+    const result = await clickElement(sandbox, { label: "Open" });
+    expect(result.status).toBe("ok");
+    expect(execSsh).toHaveBeenCalledTimes(1);
+    expect(execSsh.mock.calls[0][0]).toContain("osascript"); // the activate script actually ran
+    // Activation must happen strictly before the click, not just at some point during the call.
+    expect(execSsh.mock.invocationCallOrder[0]).toBeLessThan(click.mock.invocationCallOrder[0]);
+  });
+
+  it("skips re-activation when the target's app is already frontmost", async () => {
+    const raw = {
+      applications: [{ info: { name: "Finder", active: true }, windows: [1] }],
+      windows: [windowWith("Finder", [node("AXButton", "OK", [0, 0, 20, 20])])],
+    };
+    const click = vi.fn(async () => {});
+    const execSsh = vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const sandbox = { uiTree: async () => raw, mouse: { click }, upload: async () => {}, execSsh } as unknown as SandboxHandle;
+
+    const result = await clickElement(sandbox, { label: "OK" });
+    expect(result.status).toBe("ok");
+    expect(execSsh).not.toHaveBeenCalled();
+    expect(click).toHaveBeenCalledWith(10, 10);
+  });
 });
 
 describe("screenshotUrl", () => {

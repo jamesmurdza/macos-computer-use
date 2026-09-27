@@ -452,6 +452,11 @@ interface FoundElement {
   label: string;
   cx: number;
   cy: number;
+  /** The owning window's app (raw `owner`, e.g. "Preview"), so clickElement() can tell whether
+   * this element's window is actually the frontmost one before clicking it -- see the comment on
+   * that reactivation logic for why this matters. undefined for menu-bar items (always belong to
+   * whichever app is already frontmost, so never need this). */
+  app?: string;
 }
 
 /** Attach the current on-screen summary to an action result; settle first if the action changed
@@ -534,18 +539,18 @@ function nodeLabel(node: UiElementNode): string | undefined {
 function collectClickable(raw: UiTreeResponse, app?: string): FoundElement[] {
   const out: FoundElement[] = [];
   const appLc = app?.toLowerCase();
-  const walk = (node: UiElementNode) => {
+  const walk = (node: UiElementNode, owner: string) => {
     const label = nodeLabel(node);
     const center = nodeCenter(node);
     if (label && center) {
-      out.push({ role: node.role_description || node.role || "element", label: String(label), ...center });
+      out.push({ role: node.role_description || node.role || "element", label: String(label), app: owner, ...center });
     }
-    for (const child of node.children ?? []) walk(child);
+    for (const child of node.children ?? []) walk(child, owner);
   };
   for (const w of raw.windows ?? []) {
     if (!w.is_on_screen || SYSTEM_CHROME_OWNERS.has(w.owner)) continue;
     if (appLc && !(w.owner ?? "").toLowerCase().includes(appLc)) continue;
-    for (const child of w.children ?? []) walk(child);
+    for (const child of w.children ?? []) walk(child, w.owner);
   }
   // Menu-bar menus (File, Edit, Product, …) — click one to open it, then the tree shows its items.
   for (const m of raw.menubar_items ?? []) {
@@ -620,8 +625,9 @@ function matchElements(all: FoundElement[], role: string | undefined, label: str
 export async function clickElement(sandbox: SandboxHandle, opts: UiClickOptions): Promise<UiActionResult> {
   const deadline = Date.now() + (opts.timeoutSeconds ?? 5) * 1000;
   let matches: FoundElement[] = [];
+  let raw: UiTreeResponse = {};
   for (;;) {
-    const raw = (await sandbox.uiTree()) as UiTreeResponse;
+    raw = (await sandbox.uiTree()) as UiTreeResponse;
     matches = matchElements(collectClickable(raw, opts.app), opts.role, opts.label);
     if (matches.length > 0 || Date.now() >= deadline) break;
     await sleep(500);
@@ -652,6 +658,23 @@ export async function clickElement(sandbox: SandboxHandle, opts: UiClickOptions)
       message: `${matches.length} elements match — retry with a more specific label/role, or call again with "index" to pick one`,
       candidates: matches.slice(0, 10).map((m, i) => `${i + 1}) ${m.role} "${m.label}"`),
     });
+  }
+  // If the target's own app isn't the frontmost one, activate it first -- verified against a real
+  // sandbox and a real agent run that this matters, not just a defensive guess: once some other
+  // app becomes frontmost (e.g. the caller switched away and back while a file dialog from a
+  // different app was still open), a raw coordinate click into the now-background window's
+  // controls is accepted by the OS as "bring this window forward" only -- it does *not* also
+  // perform the click's actual action, even though it's dispatched at the exact right pixel and
+  // this function has no way to tell the difference (the click call itself never errors). Silently
+  // reproduced: clicking a file in a Preview Open dialog, then its Open button, immediately after
+  // switching focus to Safari -- both clicks "succeeded" yet the file never actually opened, and
+  // nothing in the response said why. Re-activating first (a real agent run doing this on purpose
+  // -- deliberately opening a dialog, switching apps, switching back -- would trigger this
+  // automatically) makes clicking robust regardless of what else the caller did in between.
+  const activeApp = (raw.applications ?? []).find((a) => a.info.active)?.info.name;
+  if (target.app && activeApp && target.app !== activeApp) {
+    await runAppleScript(sandbox, `tell application "${escapeAppleScript(target.app)}" to activate`);
+    await sleep(400);
   }
   await sandbox.mouse.click(Math.round(target.cx), Math.round(target.cy));
   return withScreen(sandbox, { status: "ok" });
