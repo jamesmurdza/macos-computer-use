@@ -19,6 +19,26 @@ export interface SandboxHandle {
   readonly vncUrl: string;
   readonly host: string;
   uiTree(): Promise<unknown>;
+  /**
+   * `use-computer-sdk`'s own .d.ts declares this shape (`{width,height}`), which is why it's
+   * declared this way here too (so a real `MacOSSandbox` keeps structurally satisfying this
+   * interface). Caution: verified against a real sandbox, the SDK's own `MacOSSandbox` instance
+   * does NOT actually return this shape at runtime -- it returns the gateway's raw
+   * `{ success, size: { width, height } }` unmodified, which does not match its own declared
+   * type. `attachSandbox()` below normalizes to the declared `{width,height}` shape, but any
+   * caller going through a real SDK-created sandbox must defensively check for a nested `size`
+   * too (see `setDisplayResolution` in sandbox.ts).
+   */
+  displayInfo(): Promise<{ width: number; height: number }>;
+  /** Screen recording, native to the gateway (matches `use-computer-sdk`'s `MacOSSandbox.recording`
+   * surface: `start()/stop()/listAll()/download()`). Only `start`/`stop` are declared here --
+   * `downloadRecording()` in sandbox.ts bypasses the SDK's own `recording.download()` the same way
+   * `takeScreenshot()` bypasses `screenshot.takeCompressed()`, to capture the response's
+   * content-type (which the SDK's `getBytes()` helper discards). */
+  recording: {
+    start(): Promise<string>;
+    stop(recordingId: string): Promise<{ recordingId: string; fileSize?: number }>;
+  };
   execSsh(command: string, timeoutMs?: number): Promise<ExecResult>;
   upload(data: Uint8Array, remotePath: string): Promise<void>;
   mouse: { click(x: number, y: number): Promise<void> };
@@ -105,6 +125,13 @@ export function attachSandbox(descriptor: SandboxDescriptor): SandboxHandle {
     vncUrl: descriptor.vncUrl,
     host: descriptor.host,
     uiTree: () => call("/display/windows"),
+    async displayInfo() {
+      // Normalize the gateway's raw `{ success, size: { width, height } }` to the declared
+      // `{width,height}` shape -- see the interface's doc comment for why this differs from what
+      // a real SDK-created MacOSSandbox actually returns at runtime.
+      const d = await call<{ size?: { width: number; height: number }; width?: number; height?: number }>("/display/info");
+      return { width: d.size?.width ?? d.width ?? 0, height: d.size?.height ?? d.height ?? 0 };
+    },
     async execSsh(command, timeoutMs = 120_000) {
       const d = await postJSON<{ stdout?: string; stderr?: string; exit_code?: number; return_code?: number; returncode?: number }>(
         "/exec",
@@ -126,6 +153,16 @@ export function attachSandbox(descriptor: SandboxDescriptor): SandboxHandle {
         headers: { "Content-Type": "application/octet-stream" },
         body: data as BodyInit,
       });
+    },
+    recording: {
+      async start() {
+        const d = await postJSON<{ recording_id?: string; id?: string }>("/recording/start");
+        return String(d.recording_id ?? d.id ?? "");
+      },
+      async stop(recordingId) {
+        const d = await postJSON<{ recording_id?: string; file_size?: number }>("/recording/stop", { recording_id: recordingId });
+        return { recordingId: String(d.recording_id ?? recordingId), fileSize: Number(d.file_size ?? 0) };
+      },
     },
     mouse: {
       click: (x, y) => postJSON("/mouse/click", { x, y, button: "left" }),
