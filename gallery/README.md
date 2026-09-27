@@ -2,7 +2,11 @@
 
 A minimal, standalone gallery of recorded [macos-computer-use](../README.md) agent runs: a grid of
 thumbnails with a short description, date, and YouTube-style duration badge; click one to play the
-recording.
+recording. Every run also has a real permalink at `/runs/<runId>` -- clicking a card updates the
+URL to it without a full page reload (`history.pushState`, handled in `GalleryGrid.tsx`), and
+loading that URL directly (a shared link, a refresh, a crawler) server-renders the same grid with
+that run's modal already open, including proper Open Graph/Twitter card metadata (title + thumbnail
+image) for link previews.
 
 This is a **completely separate app** from the main project on purpose — no shared dependencies,
 no shared code, no shared credentials. It only ever does a plain public `fetch()` against a
