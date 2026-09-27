@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const ENV_VARS = ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"];
+const ENV_VARS = ["CF_ACCOUNT_ID", "CF_ACCESS_KEY_ID", "CF_SECRET_ACCESS_KEY", "CF_BUCKET"];
 
 const sendMock = vi.fn(async () => ({}));
 
@@ -18,10 +18,10 @@ const { uploadRunArtifact, getRunArtifactUrl, publicRunArtifactUrl } = await imp
 
 describe("storage (R2 via the S3 API)", () => {
   beforeEach(() => {
-    process.env.R2_ACCOUNT_ID = "acct-1";
-    process.env.R2_ACCESS_KEY_ID = "key-1";
-    process.env.R2_SECRET_ACCESS_KEY = "secret-1";
-    process.env.R2_BUCKET = "runs-bucket";
+    process.env.CF_ACCOUNT_ID = "acct-1";
+    process.env.CF_ACCESS_KEY_ID = "key-1";
+    process.env.CF_SECRET_ACCESS_KEY = "secret-1";
+    process.env.CF_BUCKET = "runs-bucket";
     sendMock.mockClear();
     getSignedUrlMock.mockClear();
     vi.mocked(S3Client).mockClear();
@@ -61,23 +61,23 @@ describe("storage (R2 via the S3 API)", () => {
   });
 
   it("throws a clear error when R2 credentials are missing, without ever calling the SDK", async () => {
-    delete process.env.R2_ACCOUNT_ID;
-    await expect(uploadRunArtifact("k", new Uint8Array(), "text/plain")).rejects.toThrow("Missing env var R2_ACCOUNT_ID");
+    delete process.env.CF_ACCOUNT_ID;
+    await expect(uploadRunArtifact("k", new Uint8Array(), "text/plain")).rejects.toThrow("Missing env var CF_ACCOUNT_ID");
   });
 });
 
 describe("publicRunArtifactUrl", () => {
   afterEach(() => {
-    delete process.env.R2_PUBLIC_BASE_URL;
+    delete process.env.CF_PUBLIC_BASE_URL;
   });
 
   it("joins the configured public base URL and key, no network call", () => {
-    process.env.R2_PUBLIC_BASE_URL = "https://pub-abc123.r2.dev";
+    process.env.CF_PUBLIC_BASE_URL = "https://pub-abc123.r2.dev";
     expect(publicRunArtifactUrl("runs/xyz/video.mp4")).toBe("https://pub-abc123.r2.dev/runs/xyz/video.mp4");
   });
 
   it("strips a trailing slash from the base URL", () => {
-    process.env.R2_PUBLIC_BASE_URL = "https://pub-abc123.r2.dev/";
+    process.env.CF_PUBLIC_BASE_URL = "https://pub-abc123.r2.dev/";
     expect(publicRunArtifactUrl("runs/xyz/video.mp4")).toBe("https://pub-abc123.r2.dev/runs/xyz/video.mp4");
   });
 

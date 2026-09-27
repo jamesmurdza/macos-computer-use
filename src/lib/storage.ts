@@ -12,7 +12,7 @@ import { requireEnv } from "./env";
  * The functions that need R2 credentials (`client()`-based) are only ever called from CLI tooling
  * (tools/agent-run.ts, src/lib/gallery.ts's `rebuildGalleryIndex()`) -- never from the Next.js web
  * app, which deliberately never holds R2 secret credentials at all. `publicRunArtifactUrl()` is
- * the one exception: it's pure string-joining against `R2_PUBLIC_BASE_URL` (not a secret), used by
+ * the one exception: it's pure string-joining against `CF_PUBLIC_BASE_URL` (not a secret), used by
  * tools/agent-run.ts to print working links. The completely separate `gallery/` app (its own repo
  * root, its own Vercel deployment) does the equivalent join itself rather than importing this file.
  */
@@ -23,22 +23,22 @@ import { requireEnv } from "./env";
  * avoids a module-level singleton silently reusing stale credentials/config across calls.
  */
 function client(): S3Client {
-  const accountId = requireEnv("R2_ACCOUNT_ID");
+  const accountId = requireEnv("CF_ACCOUNT_ID");
   return new S3Client({
     region: "auto",
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: {
-      accessKeyId: requireEnv("R2_ACCESS_KEY_ID"),
-      secretAccessKey: requireEnv("R2_SECRET_ACCESS_KEY"),
+      accessKeyId: requireEnv("CF_ACCESS_KEY_ID"),
+      secretAccessKey: requireEnv("CF_SECRET_ACCESS_KEY"),
     },
   });
 }
 
-/** Upload one artifact (video, JSONL log, or metadata JSON) to `R2_BUCKET` at `key`. */
+/** Upload one artifact (video, JSONL log, or metadata JSON) to `CF_BUCKET` at `key`. */
 export async function uploadRunArtifact(key: string, body: Uint8Array, contentType: string): Promise<void> {
   await client().send(
     new PutObjectCommand({
-      Bucket: requireEnv("R2_BUCKET"),
+      Bucket: requireEnv("CF_BUCKET"),
       Key: key,
       Body: body,
       ContentType: contentType,
@@ -50,7 +50,7 @@ export async function uploadRunArtifact(key: string, body: Uint8Array, contentTy
  * throws). Used to read back a run's own `meta.json` when rebuilding the gallery index. */
 export async function downloadRunArtifact(key: string): Promise<Uint8Array | undefined> {
   try {
-    const res = await client().send(new GetObjectCommand({ Bucket: requireEnv("R2_BUCKET"), Key: key }));
+    const res = await client().send(new GetObjectCommand({ Bucket: requireEnv("CF_BUCKET"), Key: key }));
     return await res.Body?.transformToByteArray();
   } catch (err) {
     if (err instanceof NoSuchKey) return undefined;
@@ -67,7 +67,7 @@ export async function listRunIds(): Promise<string[]> {
   do {
     const page = await client().send(
       new ListObjectsV2Command({
-        Bucket: requireEnv("R2_BUCKET"),
+        Bucket: requireEnv("CF_BUCKET"),
         Prefix: "runs/",
         Delimiter: "/",
         ContinuationToken: continuationToken,
@@ -86,18 +86,18 @@ export async function listRunIds(): Promise<string[]> {
  * bucket public. Defaults to 7 days -- generous for someone coming back to review a run, well
  * under the presigner's hard cap for SigV4 URLs (7 days). */
 export async function getRunArtifactUrl(key: string, expiresInSeconds = 7 * 24 * 60 * 60): Promise<string> {
-  const command = new GetObjectCommand({ Bucket: requireEnv("R2_BUCKET"), Key: key });
+  const command = new GetObjectCommand({ Bucket: requireEnv("CF_BUCKET"), Key: key });
   return getSignedUrl(client(), command, { expiresIn: expiresInSeconds });
 }
 
 /**
  * Plain public URL for `key` when the bucket has R2's public access enabled (its `pub-*.r2.dev`
- * domain, or a custom domain) and `R2_PUBLIC_BASE_URL` is set to it -- permanent, no expiry, and
+ * domain, or a custom domain) and `CF_PUBLIC_BASE_URL` is set to it -- permanent, no expiry, and
  * far shorter than a presigned URL. Returns undefined if that var isn't set, so callers should
  * fall back to `getRunArtifactUrl()`.
  */
 export function publicRunArtifactUrl(key: string): string | undefined {
-  const base = process.env.R2_PUBLIC_BASE_URL;
+  const base = process.env.CF_PUBLIC_BASE_URL;
   if (!base) return undefined;
   return `${base.replace(/\/+$/, "")}/${key}`;
 }

@@ -111,28 +111,30 @@ Everything is saved locally to `/tmp/logs/runs/<runId>/`, and — if these four 
 `.env` — also uploaded to a Cloudflare R2 bucket:
 
 ```
-R2_ACCOUNT_ID=...
-R2_ACCESS_KEY_ID=...
-R2_SECRET_ACCESS_KEY=...
-R2_BUCKET=...
+CF_ACCOUNT_ID=...
+CF_ACCESS_KEY_ID=...
+CF_SECRET_ACCESS_KEY=...
+CF_BUCKET=...
 ```
 
 Optional: `MODEL=sonnet` picks a model, `RESOLUTION=1280x720` shrinks the recorded video,
 `AGENT_RUN_ANTHROPIC_API_KEY` uses a different Anthropic key for this script only (kept out of
-`ANTHROPIC_API_KEY`, which the web app auto-loads from `.env`), and `R2_PUBLIC_BASE_URL` (a
+`ANTHROPIC_API_KEY`, which the web app auto-loads from `.env`), and `CF_PUBLIC_BASE_URL` (a
 bucket's public `pub-*.r2.dev` domain) prints plain permanent links instead of presigned ones.
-Without the R2 vars, it still runs end-to-end and just skips the upload. See
+Without the CF vars, it still runs end-to-end and just skips the upload. If `CF_API_TOKEN` and
+`CF_KV_NAMESPACE_ID` are also set, each run is added to the gallery index (see below) too. See
 [testing.md](testing.md) for the JSONL log's schema and more detail.
 
 ## Recordings gallery
 
-Every successful `agent-run.ts` run gets added to a bucket-wide `index.json` (rebuilt after each
-run). A **separate, standalone app** in [`gallery/`](gallery/) reads that index and renders a
-clean grid — thumbnail, prompt as description, date, YouTube-style duration badge; click one to
-play the recording. It's a fully independent Next.js app on purpose — no shared dependencies, no
-shared code, no shared credentials, meant to be deployed as its own Vercel project (this app and
-the gallery don't need to run on the same host, or even both be deployed at all). See
-[`gallery/README.md`](gallery/README.md) for setup.
+Every successful `agent-run.ts` run adds itself to a small index in Cloudflare KV (one incremental
+write, not a rescan of the whole bucket). A **separate, standalone app** in [`gallery/`](gallery/)
+reads that index and renders a clean grid — thumbnail, prompt as description, date, YouTube-style
+duration badge; click one to play the recording. It's a fully independent Next.js app on purpose —
+no shared dependencies, no shared code, meant to be deployed as its own Vercel project (this app
+and the gallery don't need to run on the same host, or even both be deployed at all). Note that,
+unlike this app, the gallery *does* hold a real credential (a Cloudflare API Token for KV reads) —
+see [`gallery/README.md`](gallery/README.md) for why and for setup.
 
 ## Test
 

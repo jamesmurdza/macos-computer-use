@@ -8,7 +8,7 @@
   - `ANTHROPIC_API_KEY` — Claude, for the Playwright test and the app itself
   - `USE_COMPUTER_BASE_URL` — optional, defaults to `https://api.use.computer`
   - Only needed for `tools/agent-run.ts` (see "Headless recorded runs" below), not the web app:
-    `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` — a Cloudflare R2
+    `CF_ACCOUNT_ID`, `CF_ACCESS_KEY_ID`, `CF_SECRET_ACCESS_KEY`, `CF_BUCKET` — a Cloudflare R2
     bucket + API token (Object Read & Write) to upload run artifacts to. Without these,
     `agent-run.ts` still runs end-to-end and just skips the upload step.
   - `agent-run.ts`-only, optional: `AGENT_RUN_ANTHROPIC_API_KEY` — takes priority over
@@ -16,10 +16,18 @@
     `.env`'s `ANTHROPIC_API_KEY` for `npm run dev`/`build`/`start`, so a key meant only for
     headless recorded runs (e.g. one on a separate budget/quota) needs a different name to stay
     structurally invisible to the web app, not just "remember not to use it there."
-  - `R2_PUBLIC_BASE_URL` — optional for `agent-run.ts` (prints plain permanent public URLs for the
-    video/log instead of presigned ones). Not used by this web app at all; it's the one env var the
-    completely separate `gallery/` app needs (see its own README) to read `index.json` and the
-    recordings it references.
+  - `CF_PUBLIC_BASE_URL` — optional for `agent-run.ts` (prints plain permanent public URLs for the
+    video/log instead of presigned ones). Not used by this web app at all; it's one of the env vars
+    the completely separate `gallery/` app needs (see its own README) to serve video/thumbnail
+    files.
+  - `agent-run.ts`-only, optional, both needed together to update the gallery index:
+    `CF_API_TOKEN` — a **Cloudflare API Token** (`Authorization: Bearer ...`), not the R2
+    `CF_ACCESS_KEY_ID`/`CF_SECRET_ACCESS_KEY` pair above -- a completely different auth scheme
+    (verified: the R2 keys get a 401 against Cloudflare's own REST API), needing
+    `Workers KV Storage: Edit` permission. `CF_KV_NAMESPACE_ID` — the KV namespace's internal id
+    (not its display name); find it via the dashboard (Workers & Pages → KV) or
+    `GET /accounts/{id}/storage/kv/namespaces`. Without these, `agent-run.ts` still uploads
+    everything to R2 as normal and just skips the gallery-index update.
 - Database: none
 - Services: use.computer gateway (real macOS VM on the reserved Mac) and the Anthropic API. No mocks anywhere.
 - Only 2 VMs can exist at once on the reservation, so never run two sandbox-creating suites in parallel.
@@ -139,7 +147,7 @@ AGENT_RUN_ANTHROPIC_API_KEY=sk-ant-... npx tsx tools/agent-run.ts "..."   # kept
   print.
 - Artifacts always land locally first, at `/tmp/logs/runs/<runId>/` (`events.jsonl`, `meta.json`,
   `video.<ext>`, extension from the real download content-type) — the R2 upload happens last and
-  only if all four `R2_*` vars are set; a failed/skipped upload never loses data, it's still on
+  only if all four `CF_*` vars are set; a failed/skipped upload never loses data, it's still on
   disk.
 - If the sandbox rotates mid-run (its own idle timeout — unlikely, since the run keeps actively
   driving it), the recording lives on the now-unreachable original sandbox and can't be
@@ -152,7 +160,7 @@ AGENT_RUN_ANTHROPIC_API_KEY=sk-ant-... npx tsx tools/agent-run.ts "..."   # kept
   message recorded. Also verified a full successful run (real prompt, real Anthropic key) with a
   real R2 bucket: both `video.mp4` and `events.jsonl` were downloaded back from their printed URLs
   and confirmed byte-identical to the local copies.
-- Printed links prefer a plain public URL (`R2_PUBLIC_BASE_URL` set to the bucket's `pub-*.r2.dev`
+- Printed links prefer a plain public URL (`CF_PUBLIC_BASE_URL` set to the bucket's `pub-*.r2.dev`
   domain or a custom domain) over a presigned one -- shorter and permanent instead of expiring.
   Falls back to `getRunArtifactUrl()` (presigned, 7-day expiry) when that var isn't set, which
   still works against a bucket with no public access configured at all.
@@ -160,19 +168,45 @@ AGENT_RUN_ANTHROPIC_API_KEY=sk-ant-... npx tsx tools/agent-run.ts "..."   # kept
   quality 45) and uploads it alongside the video/log/meta. `takeScreenshot()`'s `scale` option is
   requested but not actually honored by the gateway as of `use-computer-sdk` 0.1.13 -- still
   returns a full-resolution image -- so quality is turned down instead to keep the file small.
-- After every successful upload, rebuilds the bucket-wide gallery index: `src/lib/gallery.ts`'s
-  `rebuildGalleryIndex()` lists every `runs/<id>/` in the bucket and reads each one's `meta.json`
-  to regenerate `index.json` **from scratch**, rather than incrementally patching a previous index.
-  For a personal tool doing a handful of runs, the extra list+get calls are cheap, and rebuilding
-  from each run's own ground-truth `meta.json` avoids read-modify-write races and self-heals if a
-  run's files are ever edited or deleted by hand. Only `status: "ok"` runs with a video are
-  included -- a failed run isn't something worth showing in a gallery of "what the agent did". The
-  index stores object **keys**, not resolved URLs, so it stays valid regardless of which URL scheme
-  a reader ends up using.
+- After every successful upload (if `CF_API_TOKEN`/`CF_KV_NAMESPACE_ID` are set), adds this run to
+  the gallery index with `src/lib/gallery.ts`'s `addRunToGalleryIndex()` -- an O(1) incremental
+  read-modify-write against a single JSON value in Cloudflare KV (key `"index"`), not a rescan of
+  the whole bucket.
 
 ## Recordings gallery
 
-The gallery that reads `index.json` and displays it is a **separate app**, deliberately not part
-of this codebase -- see [`gallery/README.md`](gallery/README.md) and its own docs for how it's
-built, tested, and deployed. This repo's only connection to it is writing `index.json` and the
-files it references (above); the two share no code, dependencies, or credentials.
+The gallery that reads the index and displays it is a **separate app**, deliberately not part of
+this codebase -- see [`gallery/README.md`](gallery/README.md) and its own docs for how it's built,
+tested, and deployed. This repo's only connection to it is `src/lib/gallery.ts`, which maintains
+the KV index and the R2 files it references (both described above). The two apps share no code or
+dependencies, though (unlike before this used KV) the gallery app does now need a real credential
+of its own -- see its README for why.
+
+### Gallery index storage: Cloudflare KV, and the `rebuildGalleryIndex()` repair tool
+
+The gallery index (`GalleryEntry[]`, see `src/lib/gallery.ts`) used to be a plain `index.json`
+object in R2, fully rebuilt from every `runs/<id>/meta.json` on every single run. It's now a single
+JSON value in Cloudflare KV (`src/lib/kv.ts`, a totally different Cloudflare product/API/auth
+scheme from R2 -- confirmed directly, R2's S3-style credentials get a 401 against Cloudflare's own
+REST API), updated incrementally:
+
+- `addRunToGalleryIndex(runId, meta)` -- the normal per-run path, called from `agent-run.ts`: one
+  KV read, splice in this run's entry (replacing any existing entry for the same `runId`, so a
+  retried/re-uploaded run doesn't duplicate), one KV write. O(1) regardless of history size, unlike
+  the old full-bucket rescan.
+- `rebuildGalleryIndex()` -- kept as an explicit **repair/backfill tool**
+  (`tools/rebuild-gallery-index.ts`), not part of the normal path: rescans every `runs/<id>/`,
+  re-derives each entry from that run's own `meta.json` (the actual ground truth), and overwrites
+  the whole KV value. Use it to backfill runs recorded before the KV index existed, or to recover
+  if a KV value is ever lost/corrupted or an entry dropped by a rare concurrent-write race in
+  `addRunToGalleryIndex`.
+- Trade-off worth knowing, and part of why "instead of a JSON file, for live updates" undersells
+  what actually changed: Workers KV is **eventually consistent** (Cloudflare's own docs: a write
+  can take up to 60s to propagate to edge locations other than the one it was written from), while
+  R2 (S3-compatible) is strongly consistent. The old R2-JSON-file approach was already "live" in
+  the sense that mattered -- the gallery re-fetched fresh data on every page load, and the file
+  updated the moment a run finished, no manual step. Moving to KV doesn't make updates appear
+  faster; if anything, it introduces a small staleness window that didn't exist before. What it
+  does provide is the real efficiency win above -- verified against the real namespace (see
+  `tests/unit/kv.test.ts` and a live PUT/GET/LIST/DELETE round trip against the actual API before
+  writing any of this).

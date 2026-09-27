@@ -5,21 +5,21 @@
  *   - writes a structured, timestamped JSONL log of every agent event,
  *   - captures a thumbnail screenshot of wherever the run ended up,
  *   - uploads the video, the log, the thumbnail, and a small metadata file to Cloudflare R2,
- *   - rebuilds a bucket-wide index.json the /gallery page reads (see src/lib/gallery.ts),
+ *   - adds this run to the gallery index, a JSON value in Cloudflare KV (see src/lib/gallery.ts),
  * so a later tool can overlay the log onto the video, and so every recorded run shows up in the
  * gallery without any manual step.
  *
  * This is a sibling to agent-harness.ts, not a replacement for it: the harness stays a fast,
  * credential-light dev-iteration tool (just USE_COMPUTER_* and ANTHROPIC_API_KEY). This script needs
- * the extra R2_* credentials and takes longer (it downloads/uploads a video), so it's the
- * "production-style" headless path. If R2_* isn't set, it still runs end-to-end and leaves every
+ * the extra CF_* credentials and takes longer (it downloads/uploads a video), so it's the
+ * "production-style" headless path. If CF_* isn't set, it still runs end-to-end and leaves every
  * artifact under /tmp/logs/runs/<runId>/ -- it just skips the upload step.
  *
  * Usage:  npx tsx tools/agent-run.ts "use xcode to make and run a hello world script"
  *         MODEL=sonnet npx tsx tools/agent-run.ts "open safari and go to example.com"
  *         RESOLUTION=1280x720 npx tsx tools/agent-run.ts "..."   # shrink the recorded video
  *
- * AGENT_RUN_ANTHROPIC_API_KEY / R2_PUBLIC_BASE_URL: see below, right after the `.env` load.
+ * AGENT_RUN_ANTHROPIC_API_KEY / CF_PUBLIC_BASE_URL: see below, right after the `.env` load.
  *
  * Every JSONL line's `elapsedMs` is measured from the exact moment the recording actually
  * started (right after `recording.start()` resolves), not from process start or prompt time --
@@ -51,7 +51,7 @@ const { streamAgent } = await import("../src/lib/agent.js");
 const { createSandbox } = await import("../src/lib/sandbox-handle.js");
 const { downloadRecording, setDisplayResolution, takeScreenshot } = await import("../src/lib/sandbox.js");
 const { uploadRunArtifact, getRunArtifactUrl, publicRunArtifactUrl } = await import("../src/lib/storage.js");
-const { rebuildGalleryIndex } = await import("../src/lib/gallery.js");
+const { addRunToGalleryIndex } = await import("../src/lib/gallery.js");
 const { isModelChoice, DEFAULT_MODEL_CHOICE } = await import("../src/lib/llm.js");
 
 function parseResolution(v: string | undefined): { width: number; height: number } | undefined {
@@ -66,8 +66,14 @@ function extensionFor(contentType: string): string {
   return KNOWN_VIDEO_EXTENSIONS[contentType] ?? contentType.split("/")[1]?.replace(/[^a-z0-9]/gi, "") ?? "bin";
 }
 
-const R2_VARS = ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"];
+const R2_VARS = ["CF_ACCOUNT_ID", "CF_ACCESS_KEY_ID", "CF_SECRET_ACCESS_KEY", "CF_BUCKET"];
 const haveR2 = R2_VARS.every((k) => !!process.env[k]);
+
+// KV is separate from R2 above (different Cloudflare product, different auth -- see kv.ts):
+// CF_ACCOUNT_ID is shared, but CF_API_TOKEN/CF_KV_NAMESPACE_ID are KV-specific, so it's possible
+// to have R2 configured without KV (or vice versa) -- gated independently.
+const KV_VARS = ["CF_ACCOUNT_ID", "CF_API_TOKEN", "CF_KV_NAMESPACE_ID"];
+const haveKv = KV_VARS.every((k) => !!process.env[k]);
 
 const prompt = process.argv.slice(2).join(" ") || "use xcode to make and run a hello world script";
 const modelChoice = isModelChoice(process.env.MODEL) ? process.env.MODEL : DEFAULT_MODEL_CHOICE;
@@ -243,22 +249,26 @@ try {
       if (thumbnailFile) {
         await uploadRunArtifact(`${prefix}/${thumbnailFile}`, readFileSync(`${localDir}/${thumbnailFile}`), "image/jpeg");
       }
-      // Prefer a plain public URL (permanent, no expiry) when R2_PUBLIC_BASE_URL is set (the
+      // Prefer a plain public URL (permanent, no expiry) when CF_PUBLIC_BASE_URL is set (the
       // bucket's public "pub-*.r2.dev" domain or a custom domain); fall back to a presigned URL
       // otherwise, which works against a private bucket with no public access configured at all.
       const eventsUrl = publicRunArtifactUrl(`${prefix}/events.jsonl`) ?? (await getRunArtifactUrl(`${prefix}/events.jsonl`));
       const videoUrl = videoFile ? (publicRunArtifactUrl(`${prefix}/${videoFile}`) ?? (await getRunArtifactUrl(`${prefix}/${videoFile}`))) : undefined;
-      console.log(`\nuploaded to r2://${process.env.R2_BUCKET}/${prefix}/`);
+      console.log(`\nuploaded to r2://${process.env.CF_BUCKET}/${prefix}/`);
       console.log(`  events: ${eventsUrl}`);
       if (videoUrl) console.log(`  video:  ${videoUrl}`);
 
-      // Rebuild the /gallery index from every run currently in the bucket (not just this one) --
-      // see gallery.ts for why a full rebuild rather than an incremental patch.
-      try {
-        const entries = await rebuildGalleryIndex();
-        console.log(`gallery index rebuilt: ${entries.length} run(s)`);
-      } catch (err) {
-        console.error("Failed to rebuild the gallery index (this run's own artifacts are still uploaded fine):", err instanceof Error ? err.message : err);
+      // Add this run to the gallery index (Cloudflare KV, see src/lib/gallery.ts) -- an O(1)
+      // incremental write, not the full-bucket rebuild tools/rebuild-gallery-index.ts does.
+      if (haveKv) {
+        try {
+          const entries = await addRunToGalleryIndex(runId, meta);
+          console.log(`gallery index updated: ${entries.length} run(s) total`);
+        } catch (err) {
+          console.error("Failed to update the gallery index (this run's own artifacts are still uploaded fine):", err instanceof Error ? err.message : err);
+        }
+      } else {
+        console.log(`(${KV_VARS.join("/")} not all set -- skipping gallery index update)`);
       }
     } catch (err) {
       console.error(`R2 upload failed (artifacts are still intact locally at ${localDir}):`, err instanceof Error ? err.message : err);
