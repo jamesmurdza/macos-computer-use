@@ -32,16 +32,28 @@ export interface GalleryEntry {
   durationMs: number;
   videoKey: string;
   thumbnailKey: string;
+  /** Exactly `meta.json`'s `modelChoice` -- e.g. `"haiku"` or `"openrouter:qwen/qwen3.7-flash"`,
+   * no lookup table needed to know what actually ran. */
+  model: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  /** Estimated USD cost against current list price -- see src/lib/cost.ts's own caveats
+   * (undefined, not 0, when pricing couldn't be determined). */
+  costUsd?: number;
 }
 
 /** The subset of tools/agent-run.ts's meta.json this cares about. */
 interface RunMeta {
   runId: string;
   prompt: string;
+  modelChoice: string;
   videoStartedAt?: number;
   videoEndedAt?: number;
   videoFile?: string;
   status: "ok" | "error";
+  inputTokens?: number;
+  outputTokens?: number;
+  costUsd?: number;
 }
 
 const INDEX_KEY = "index.json";
@@ -73,6 +85,10 @@ function metaToEntry(runId: string, meta: RunMeta): GalleryEntry | undefined {
     durationMs: meta.videoEndedAt - meta.videoStartedAt,
     videoKey: `runs/${runId}/${meta.videoFile}`,
     thumbnailKey: `runs/${runId}/thumbnail.jpg`,
+    model: meta.modelChoice,
+    inputTokens: meta.inputTokens,
+    outputTokens: meta.outputTokens,
+    costUsd: meta.costUsd,
   };
 }
 

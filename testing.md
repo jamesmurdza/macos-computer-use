@@ -20,6 +20,12 @@
     video/log instead of presigned ones). Not used by this web app at all; it's the one env var
     the completely separate `gallery/` app needs (see its own README) to read `index.json` and
     serve video/thumbnail files.
+  - `agent-run.ts`-only, optional: `OPENROUTER_API_KEY` — lets `MODEL` be
+    `openrouter:<provider>/<model-id>` (e.g. `openrouter:qwen/qwen3.7-flash`) instead of one of the
+    three built-in Anthropic choices, routed through the AI SDK's OpenRouter provider. Not read at
+    all unless an `openrouter:` selector is actually used, and not accepted by the web app's own
+    model dropdown/route validation at all (that stays limited to `opus`/`sonnet`/`haiku`) — this
+    is a `tools/agent-run.ts`-only escape hatch for trying other models' cost/quality tradeoffs.
 - Database: none
 - Services: use.computer gateway (real macOS VM on the reserved Mac) and the Anthropic API. No mocks anywhere.
 - Only 2 VMs can exist at once on the reservation, so never run two sandbox-creating suites in parallel.
@@ -125,6 +131,7 @@ MODEL=sonnet npx tsx tools/agent-run.ts "open safari and go to example.com"
 RESOLUTION=1280x720 npx tsx tools/agent-run.ts "..."   # override the default resolution
 RESOLUTION=native npx tsx tools/agent-run.ts "..."     # keep the sandbox's native 1920x1080
 AGENT_RUN_ANTHROPIC_API_KEY=sk-ant-... npx tsx tools/agent-run.ts "..."   # kept out of the web app
+OPENROUTER_API_KEY=sk-or-... MODEL=openrouter:qwen/qwen3.7-flash npx tsx tools/agent-run.ts "..."
 ```
 
 - Shrinks the sandbox to `DEFAULT_RESOLUTION` (1280x960 -- see "Display
@@ -167,6 +174,16 @@ AGENT_RUN_ANTHROPIC_API_KEY=sk-ant-... npx tsx tools/agent-run.ts "..."   # kept
 - After every successful upload, adds this run to the gallery index with `src/lib/gallery.ts`'s
   `addRunToGalleryIndex()` -- an O(1) incremental read-modify-write against `index.json` (also in
   R2), not a rescan of the whole bucket.
+- Records which model actually ran and what it cost: `meta.json` (and each gallery index entry)
+  gets `modelChoice`/`model` (the exact selector used -- `"haiku"` or
+  `"openrouter:qwen/qwen3.7-flash"`, whichever was passed via `MODEL`), plus `inputTokens`/
+  `outputTokens` (from the AI SDK's `streamText()` result, which sums usage across every internal
+  tool-calling step automatically) and an estimated `costUsd` when pricing is known for that model
+  (`src/lib/cost.ts`: hardcoded list prices for the three Anthropic choices, a live lookup against
+  OpenRouter's public, unauthenticated `/api/v1/models` pricing endpoint for `openrouter:`
+  selectors). `costUsd` is an estimate against current list price, not the exact amount billed, and
+  is left `undefined` (not `0`) rather than guessed when pricing can't be determined. The gallery
+  app displays both underneath the video (see below).
 
 ## Recordings gallery
 

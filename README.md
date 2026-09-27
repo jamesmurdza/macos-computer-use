@@ -118,22 +118,31 @@ CF_SECRET_ACCESS_KEY=...
 CF_BUCKET=...
 ```
 
-Optional: `MODEL=sonnet` picks a model, `RESOLUTION=1280x720` overrides the default resolution
-(`RESOLUTION=native` keeps the sandbox's full 1920x1080 instead of shrinking it),
-`AGENT_RUN_ANTHROPIC_API_KEY` uses a different Anthropic key for this script only (kept out of
-`ANTHROPIC_API_KEY`, which the web app auto-loads from `.env`), and `CF_PUBLIC_BASE_URL` (a
-bucket's public `pub-*.r2.dev` domain) prints plain permanent links instead of presigned ones.
-Without the CF vars, it still runs end-to-end and just skips the upload; when they are set, each
-run also gets added to the gallery index (see below). See [testing.md](testing.md) for the JSONL
-log's schema and more detail.
+Optional: `MODEL=sonnet` picks a model (`opus`/`sonnet`/`haiku`, the same three the web app offers),
+`RESOLUTION=1280x720` overrides the default resolution (`RESOLUTION=native` keeps the sandbox's
+full 1920x1080 instead of shrinking it), `AGENT_RUN_ANTHROPIC_API_KEY` uses a different Anthropic
+key for this script only (kept out of `ANTHROPIC_API_KEY`, which the web app auto-loads from
+`.env`), and `CF_PUBLIC_BASE_URL` (a bucket's public `pub-*.r2.dev` domain) prints plain permanent
+links instead of presigned ones. Without the CF vars, it still runs end-to-end and just skips the
+upload; when they are set, each run also gets added to the gallery index (see below).
+
+This script (only — not the web app) can also run any model available on
+[OpenRouter](https://openrouter.ai) instead of Anthropic directly: set `OPENROUTER_API_KEY` in
+`.env`, then pass `MODEL=openrouter:<provider>/<model-id>`, e.g.
+`MODEL=openrouter:qwen/qwen3.7-flash`. Every run's `meta.json` (and the gallery index) records
+exactly which model string was used, plus token counts and an estimated USD cost when pricing is
+known for that model (hardcoded for the three Anthropic choices, looked up live from OpenRouter's
+public pricing API for `openrouter:` selectors) — see [testing.md](testing.md) for the JSONL log's
+schema and more detail.
 
 ## Recordings gallery
 
 Every successful `agent-run.ts` run adds itself to a small `index.json` in the same R2 bucket (one
 incremental read-modify-write, not a rescan of the whole bucket). A **separate, standalone app** in
 [`gallery/`](gallery/) reads that index and renders a clean grid — thumbnail, prompt as
-description, date, YouTube-style duration badge; click one to play the recording. It's a fully
-independent Next.js app on purpose — no shared dependencies, no shared code, no shared credentials,
+description, date, YouTube-style duration badge; click one to play the recording, and see the
+model used (plus estimated cost, when known) underneath. It's a fully independent Next.js app on
+purpose — no shared dependencies, no shared code, no shared credentials,
 meant to be deployed as its own Vercel project (this app and the gallery don't need to run on the
 same host, or even both be deployed at all). See [`gallery/README.md`](gallery/README.md) for
 setup.

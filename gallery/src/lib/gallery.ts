@@ -21,6 +21,14 @@ export interface GalleryEntry {
   durationMs: number;
   videoKey: string;
   thumbnailKey: string;
+  /** Exactly what the writer's `modelChoice` was -- e.g. `"haiku"` or
+   * `"openrouter:qwen/qwen3.7-flash"`, no lookup table needed to know what actually ran. */
+  model: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  /** Estimated USD cost against current list price, not the exact amount billed. Absent (not 0)
+   * when the writer couldn't determine pricing for that model. */
+  costUsd?: number;
 }
 
 export interface GalleryEntryResolved extends GalleryEntry {
@@ -68,4 +76,10 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 export function formatDate(iso: string): string {
   const d = new Date(iso);
   return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
+}
+
+/** "$0.0046" / "$1.20" -- these runs are cheap enough that a fixed 2-decimal format would round
+ * most of them to "$0.00", so anything under a dime gets 4 decimals instead. */
+export function formatCost(costUsd: number): string {
+  return costUsd < 0.1 ? `$${costUsd.toFixed(4)}` : `$${costUsd.toFixed(2)}`;
 }
