@@ -42,7 +42,10 @@ describe("rebuildGalleryIndex (repair/backfill: scans R2 meta.json files, overwr
     vi.mocked(uploadRunArtifact).mockClear();
   });
 
-  it("includes only status:ok runs with a video, newest first, and writes index.json", async () => {
+  it("includes any run with a video regardless of status, newest first, and writes index.json", async () => {
+    // "run-failed" has no videoFile at all (a run that died before ever starting the recording) --
+    // that's what excludes it here, not its status:"error". A run that errored/was killed *after*
+    // getting a real video is included -- see the dedicated test below for that case.
     vi.mocked(listRunIds).mockResolvedValue(["run-old-ok", "run-failed", "run-new-ok", "run-corrupt"]);
     vi.mocked(downloadRunArtifact).mockImplementation(async (key: string) => {
       if (key === "runs/run-old-ok/meta.json") return jsonBytes(OLD_OK_META);
@@ -64,9 +67,35 @@ describe("rebuildGalleryIndex (repair/backfill: scans R2 meta.json files, overwr
       inputTokens: 12_000,
       outputTokens: 800,
       costUsd: 0.00046,
+      status: "ok",
     });
-    expect(entries[1]).toMatchObject({ model: "haiku", inputTokens: undefined, outputTokens: undefined, costUsd: undefined });
+    expect(entries[1]).toMatchObject({ model: "haiku", inputTokens: undefined, outputTokens: undefined, costUsd: undefined, status: "ok" });
     expect(uploadRunArtifact).toHaveBeenCalledWith("index.json", expect.any(Uint8Array), "application/json");
+  });
+
+  it("includes a run that errored or was killed mid-task, as long as it has a real video", async () => {
+    // The actual behavior this file guards: a run isn't withheld from the gallery just because it
+    // didn't finish cleanly -- an incomplete run is still real output worth being able to watch
+    // (same principle as CLAUDE.md's "never delete a user-requested run without being asked").
+    const killedMidTask = {
+      runId: "run-killed",
+      prompt: "fill out the W-9 form",
+      modelChoice: "openrouter:qwen/qwen3.7-flash",
+      videoStartedAt: 3_000_000,
+      videoEndedAt: 3_090_000,
+      videoFile: "video.mp4",
+      status: "error" as const,
+      error: "Terminated by SIGTERM after 12 step(s) (recording preserved below).",
+    };
+    vi.mocked(listRunIds).mockResolvedValue(["run-killed"]);
+    vi.mocked(downloadRunArtifact).mockImplementation(async (key: string) =>
+      key === "runs/run-killed/meta.json" ? jsonBytes(killedMidTask) : undefined,
+    );
+
+    const entries = await rebuildGalleryIndex();
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ runId: "run-killed", status: "error", durationMs: 90_000 });
   });
 
   it("skips a run whose meta.json is missing entirely", async () => {
@@ -131,7 +160,7 @@ describe("addRunToGalleryIndex (normal per-run path: one read + one write agains
     expect(entries[0].description).toBe("open TextEdit and type Hello World");
   });
 
-  it("does not add a failed run, and leaves the index untouched", async () => {
+  it("does not add a run with no video (regardless of status), and leaves the index untouched", async () => {
     vi.mocked(downloadRunArtifact).mockResolvedValue(undefined);
 
     const entries = await addRunToGalleryIndex("run-failed", { runId: "run-failed", prompt: "do something", modelChoice: "haiku", status: "error" });

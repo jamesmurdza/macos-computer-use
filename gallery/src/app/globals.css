@@ -42,6 +42,14 @@ body { margin: 0; color: var(--ink); background: var(--bg); font: 14.5px/1.55 va
   position: absolute; right: 6px; bottom: 6px; background: rgba(10, 9, 8, .78); color: #fff;
   font-family: var(--mono); font-size: 11px; line-height: 1; padding: 3px 5px; border-radius: 4px;
 }
+/* A run that errored or was killed mid-task, but still has a real recording -- shown, never
+   hidden (see src/lib/gallery.ts's metaToEntry()), just flagged so it's not mistaken for a clean
+   finish. Same pill language as .gallery-duration, opposite corner, amber instead of neutral. */
+.gallery-badge-incomplete {
+  position: absolute; left: 6px; top: 6px; background: rgba(180, 83, 9, .85); color: #fff;
+  font-family: var(--mono); font-size: 11px; line-height: 1; padding: 3px 5px; border-radius: 4px;
+}
+.gallery-badge-incomplete-inline { color: #b45309; }
 .gallery-meta { display: flex; flex-direction: column; gap: 3px; margin-top: 10px; }
 .gallery-desc {
   font-size: 13.5px; font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis;

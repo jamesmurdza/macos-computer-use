@@ -29,6 +29,9 @@ export interface GalleryEntry {
   /** Estimated USD cost against current list price, not the exact amount billed. Absent (not 0)
    * when the writer couldn't determine pricing for that model. */
   costUsd?: number;
+  /** "ok" (finished normally) or "error" (crashed, or killed mid-task) -- every run with a video
+   * is listed regardless, so this is only ever used to show a badge, never to filter. */
+  status: "ok" | "error";
 }
 
 export interface GalleryEntryResolved extends GalleryEntry {
