@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { buildAssScript, burnCaptions } from "../../../../lib/burnCaptions";
+import { buildAssScript, burnCaptions, measureCaptionBoxes } from "../../../../lib/burnCaptions";
 import { parseCaptions } from "../../../../lib/captions";
 
 export const runtime = "nodejs";
@@ -50,10 +50,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ runId: s
     const assPath = path.join(dir, "captions.ass");
     const outputPath = path.join(dir, "output.mp4");
 
-    await Promise.all([
+    // The box each caption gets drawn in is sized to actually fit its text (for rounded corners
+    // that hug the words rather than a fixed guess) -- measureCaptionBoxes renders each caption
+    // off-screen first to read back real pixel dimensions. See burnCaptions.ts's module doc.
+    const [, boxes] = await Promise.all([
       writeFile(inputPath, Buffer.from(await videoRes.arrayBuffer())),
-      writeFile(assPath, buildAssScript(captions), "utf8"),
+      measureCaptionBoxes(captions, dir),
     ]);
+    await writeFile(assPath, buildAssScript(captions, boxes), "utf8");
 
     await burnCaptions(inputPath, assPath, outputPath);
 
