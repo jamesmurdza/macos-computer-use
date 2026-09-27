@@ -1,10 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SandboxHandle } from "../../src/lib/sandbox-handle.js";
-import { clickElement, screenshotUrl, uiTreeSummary } from "../../src/lib/sandbox.js";
+import { clickElement, openApp, screenshotUrl, uiTreeSummary } from "../../src/lib/sandbox.js";
 
 /** A trimmed real `uiTree()` response: one background app, one real window with nested elements. */
 function fakeSandbox(uiTree: unknown): SandboxHandle {
   return { uiTree: async () => uiTree } as unknown as SandboxHandle;
+}
+
+/** A sandbox whose `activate` AppleScript (via upload+execSsh) returns a fixed result, for
+ * exercising openApp()'s handling of a failed vs. successful activation. */
+function fakeAppSandbox(activation: { stdout: string; stderr: string; exitCode: number }, uiTree: unknown): SandboxHandle {
+  return { upload: async () => {}, execSsh: async () => activation, uiTree: async () => uiTree } as unknown as SandboxHandle;
 }
 
 /** A clickable node: a labeled, on-screen element with a real rectangle to compute a click point from. */
@@ -324,5 +330,37 @@ describe("screenshotUrl", () => {
 
   it("tolerates a trailing slash on the base URL", () => {
     expect(screenshotUrl("https://api.use.computer/", "sb-1")).toContain("computer/v1/sandboxes/sb-1/");
+  });
+});
+
+describe("openApp", () => {
+  it("surfaces a failed activation instead of silently polling for a window that can never appear", async () => {
+    // Regression: verified against a real sandbox that `tell application "iOS Simulator" to
+    // activate` (a name a model can very plausibly guess -- the real app is just called
+    // "Simulator") fails immediately with a real AppleScript error, which used to be silently
+    // swallowed, making a flat-out wrong app name look identical to a slow launch.
+    const activationError = {
+      stdout: "",
+      stderr: '36:44: execution error: Can’t get application "iOS Simulator". (-1728)\n',
+      exitCode: 1,
+    };
+    const idleDesktop = { applications: [], windows: [] };
+    const result = await openApp(fakeAppSandbox(activationError, idleDesktop), "iOS Simulator");
+    const parsed = JSON.parse(result);
+    expect(parsed.note).toMatch(/could not be activated/);
+    expect(parsed.note).toMatch(/iOS Simulator/);
+    expect(parsed.note).toMatch(/Can.t get application/);
+  });
+
+  it("still returns a normal window summary when activation succeeds", async () => {
+    const ok = { stdout: "", stderr: "", exitCode: 0 };
+    const withWindow = {
+      applications: [{ info: { name: "Simulator", active: true }, windows: [1] }],
+      windows: [{ name: "iPhone 16 Plus", owner: "Simulator", role: "app", is_on_screen: true, children: [{ name: "Safari", role: "AXButton" }] }],
+    };
+    const result = await openApp(fakeAppSandbox(ok, withWindow), "Simulator");
+    const parsed = JSON.parse(result);
+    expect(parsed.note).toBeUndefined();
+    expect(parsed.windows[0].elements).toEqual([{ role: "AXButton", label: "Safari" }]);
   });
 });

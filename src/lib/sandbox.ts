@@ -336,9 +336,24 @@ function appHasWindow(raw: UiTreeResponse, app: string): boolean {
  * a delay" pattern: if the app never shows a usable window within the timeout, the returned
  * summary's `note` says it's frontmost with nothing on screen (and any blank window or blocking
  * dialog appears in `windows`), so the caller can react instead of acting on nothing.
+ *
+ * `activate`'s own exit code is checked first and surfaced as a `note` too, distinctly from a slow
+ * launch: verified against a real sandbox that `tell application "iOS Simulator" to activate` (a
+ * name a model can very plausibly guess -- the actual app is just called "Simulator") fails
+ * immediately with a real AppleScript error ("Can't get application ‘iOS Simulator’"), which this
+ * function used to silently swallow and then poll for a window that could never appear -- making a
+ * flat-out wrong app name look identical to one that's just slow to launch, until the timeout
+ * expired with no explanation either way.
  */
 export async function openApp(sandbox: SandboxHandle, app: string, timeoutSeconds = 15): Promise<string> {
-  await runAppleScript(sandbox, `tell application "${escapeAppleScript(app)}" to activate`);
+  const activation = await runAppleScript(sandbox, `tell application "${escapeAppleScript(app)}" to activate`);
+  if (activation.exitCode !== 0) {
+    const detail = (activation.stderr || activation.stdout).trim() || `exit code ${activation.exitCode}`;
+    const parsed = JSON.parse(summarizeTree((await sandbox.uiTree()) as UiTreeResponse)) as { note?: string };
+    const activationNote = `"${app}" could not be activated (this is not just a slow launch) -- macOS reported: ${detail}. Double-check the exact app name and try again.`;
+    parsed.note = parsed.note ? `${activationNote} ${parsed.note}` : activationNote;
+    return JSON.stringify(parsed);
+  }
   const deadline = Date.now() + timeoutSeconds * 1000;
   let raw = (await sandbox.uiTree()) as UiTreeResponse;
   while (!appHasWindow(raw, app) && Date.now() < deadline) {
