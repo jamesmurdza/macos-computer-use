@@ -38,7 +38,8 @@ Filling out a PDF form Safari is displaying inline (e.g. you navigated straight 
   3. open_app the app you need for filling it in (e.g. Preview).
   4. press_keys("cmd+o") to open its file picker, then click_element("Documents") in the sidebar.
   5. click_element on the exact filename you saved (e.g. "fw9.pdf") in the file list, then click_element("Open", role: "button").
-The app opens the real file in its own new window -- read the tree there and use its fillable form fields normally, the same as any other document.
+  6. Immediately close Safari's original copy (open_app("Safari"), then press_keys("cmd+w")) before filling in anything. Skipping this is a real, observed failure mode: Safari's inline PDF and the new Preview window both stay open showing the identical-looking form with identically-labeled empty fields, and click_element/type_text calls that don't pin down "app" can silently land in whichever copy happens to match first -- ending up with some fields filled in Safari and others in Preview, neither one complete. With only one copy left open, every subsequent click has one obvious target and this can't happen.
+Now fill in the fields and save, the same as any other document.
 
 Keep going, one step at a time, until the instruction is FULLY done — including any final step like actually running or saving. Do not stop after setup or assume a later step worked; look at each action's returned screen to verify it. Only when it's genuinely complete, reply with one short sentence describing what you did. If you truly cannot proceed (an app won't launch, a required control never appears after looking again), say so plainly and explain exactly where you got stuck — never claim success you didn't verify.
 
