@@ -11,6 +11,15 @@
     `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` — a Cloudflare R2
     bucket + API token (Object Read & Write) to upload run artifacts to. Without these,
     `agent-run.ts` still runs end-to-end and just skips the upload step.
+  - Also `agent-run.ts`-only, both optional:
+    - `AGENT_RUN_ANTHROPIC_API_KEY` — takes priority over `ANTHROPIC_API_KEY` for this script only.
+      Deliberately a different name: Next.js auto-loads `.env`'s `ANTHROPIC_API_KEY` for
+      `npm run dev`/`build`/`start`, so a key meant only for headless recorded runs (e.g. one on a
+      separate budget/quota) needs a different name to stay structurally invisible to the web app,
+      not just "remember not to use it there."
+    - `R2_PUBLIC_BASE_URL` — if the bucket has R2's public access enabled (its `pub-*.r2.dev`
+      domain, or a custom domain), set this to it and `agent-run.ts` prints plain permanent public
+      URLs for the video/log instead of presigned ones (which expire and are much longer).
 - Database: none
 - Services: use.computer gateway (real macOS VM on the reserved Mac) and the Anthropic API. No mocks anywhere.
 - Only 2 VMs can exist at once on the reservation, so never run two sandbox-creating suites in parallel.
@@ -114,6 +123,7 @@ log + a metadata file to Cloudflare R2 — so a later tool can overlay the log o
 npx tsx tools/agent-run.ts "use xcode to make and run a hello world script"
 MODEL=sonnet npx tsx tools/agent-run.ts "open safari and go to example.com"
 RESOLUTION=1280x720 npx tsx tools/agent-run.ts "..."   # shrink the recorded video, see above
+AGENT_RUN_ANTHROPIC_API_KEY=sk-ant-... npx tsx tools/agent-run.ts "..."   # kept out of the web app
 ```
 
 - Recording is native to the gateway (`sandbox.recording.start()/stop()`, confirmed a genuine
@@ -139,4 +149,10 @@ RESOLUTION=1280x720 npx tsx tools/agent-run.ts "..."   # shrink the recorded vid
 - Verified end-to-end against a real sandbox, including the failure path: killed the Anthropic
   call (no `ANTHROPIC_API_KEY`) mid-run and confirmed the recording was still stopped, downloaded
   (a valid, playable `.mp4`), and all artifacts written with `status: "error"` and the underlying
-  message recorded.
+  message recorded. Also verified a full successful run (real prompt, real Anthropic key) with a
+  real R2 bucket: both `video.mp4` and `events.jsonl` were downloaded back from their printed URLs
+  and confirmed byte-identical to the local copies.
+- Printed links prefer a plain public URL (`R2_PUBLIC_BASE_URL` set to the bucket's `pub-*.r2.dev`
+  domain or a custom domain) over a presigned one -- shorter and permanent instead of expiring.
+  Falls back to `getRunArtifactUrl()` (presigned, 7-day expiry) when that var isn't set, which
+  still works against a bucket with no public access configured at all.

@@ -16,6 +16,8 @@
  *         MODEL=sonnet npx tsx tools/agent-run.ts "open safari and go to example.com"
  *         RESOLUTION=1280x720 npx tsx tools/agent-run.ts "..."   # shrink the recorded video
  *
+ * AGENT_RUN_ANTHROPIC_API_KEY / R2_PUBLIC_BASE_URL: see below, right after the `.env` load.
+ *
  * Every JSONL line's `elapsedMs` is measured from the exact moment the recording actually
  * started (right after `recording.start()` resolves), not from process start or prompt time --
  * that's the number a later overlay tool should seek the video by.
@@ -31,10 +33,21 @@ import { randomUUID } from "node:crypto";
 
 if (existsSync(".env")) process.loadEnvFile(".env");
 
+/**
+ * Deliberately a different name from ANTHROPIC_API_KEY: `npm run dev`/`build`/`start` (Next.js)
+ * auto-load `.env`'s `ANTHROPIC_API_KEY` for the web app, so a key meant only for headless
+ * recorded runs needs a different name to stay structurally invisible to the web app -- not just
+ * "don't set it there." Falls back to plain `ANTHROPIC_API_KEY` so this still works with no extra
+ * setup for anyone who doesn't care about the distinction. This only ever mutates this script's
+ * own process env (a separate OS process from any running `next dev`), never the `.env` file.
+ */
+const anthropicKey = process.env.AGENT_RUN_ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY;
+if (anthropicKey) process.env.ANTHROPIC_API_KEY = anthropicKey;
+
 const { streamAgent } = await import("../src/lib/agent.js");
 const { createSandbox } = await import("../src/lib/sandbox-handle.js");
 const { downloadRecording, setDisplayResolution } = await import("../src/lib/sandbox.js");
-const { uploadRunArtifact, getRunArtifactUrl } = await import("../src/lib/storage.js");
+const { uploadRunArtifact, getRunArtifactUrl, publicRunArtifactUrl } = await import("../src/lib/storage.js");
 const { isModelChoice, DEFAULT_MODEL_CHOICE } = await import("../src/lib/llm.js");
 
 function parseResolution(v: string | undefined): { width: number; height: number } | undefined {
@@ -204,9 +217,14 @@ try {
       if (videoFile) {
         await uploadRunArtifact(`${prefix}/${videoFile}`, readFileSync(`${localDir}/${videoFile}`), videoContentType ?? "application/octet-stream");
       }
+      // Prefer a plain public URL (permanent, no expiry) when R2_PUBLIC_BASE_URL is set (the
+      // bucket's public "pub-*.r2.dev" domain or a custom domain); fall back to a presigned URL
+      // otherwise, which works against a private bucket with no public access configured at all.
+      const eventsUrl = publicRunArtifactUrl(`${prefix}/events.jsonl`) ?? (await getRunArtifactUrl(`${prefix}/events.jsonl`));
+      const videoUrl = videoFile ? (publicRunArtifactUrl(`${prefix}/${videoFile}`) ?? (await getRunArtifactUrl(`${prefix}/${videoFile}`))) : undefined;
       console.log(`\nuploaded to r2://${process.env.R2_BUCKET}/${prefix}/`);
-      console.log(`  events: ${await getRunArtifactUrl(`${prefix}/events.jsonl`)}`);
-      if (videoFile) console.log(`  video:  ${await getRunArtifactUrl(`${prefix}/${videoFile}`)}`);
+      console.log(`  events: ${eventsUrl}`);
+      if (videoUrl) console.log(`  video:  ${videoUrl}`);
     } catch (err) {
       console.error(`R2 upload failed (artifacts are still intact locally at ${localDir}):`, err instanceof Error ? err.message : err);
     }

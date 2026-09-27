@@ -49,3 +49,15 @@ export async function getRunArtifactUrl(key: string, expiresInSeconds = 7 * 24 *
   const command = new GetObjectCommand({ Bucket: requireEnv("R2_BUCKET"), Key: key });
   return getSignedUrl(client(), command, { expiresIn: expiresInSeconds });
 }
+
+/**
+ * Plain public URL for `key` when the bucket has R2's public access enabled (its `pub-*.r2.dev`
+ * domain, or a custom domain) and `R2_PUBLIC_BASE_URL` is set to it -- permanent, no expiry, and
+ * far shorter than a presigned URL. Returns undefined if that var isn't set, so callers should
+ * fall back to `getRunArtifactUrl()`.
+ */
+export function publicRunArtifactUrl(key: string): string | undefined {
+  const base = process.env.R2_PUBLIC_BASE_URL;
+  if (!base) return undefined;
+  return `${base.replace(/\/+$/, "")}/${key}`;
+}

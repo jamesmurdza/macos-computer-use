@@ -14,7 +14,7 @@ const getSignedUrlMock = vi.fn(async () => "https://signed.example/run.mp4");
 vi.mock("@aws-sdk/s3-request-presigner", () => ({ getSignedUrl: getSignedUrlMock }));
 
 const { S3Client, PutObjectCommand, GetObjectCommand } = await import("@aws-sdk/client-s3");
-const { uploadRunArtifact, getRunArtifactUrl } = await import("../../src/lib/storage.js");
+const { uploadRunArtifact, getRunArtifactUrl, publicRunArtifactUrl } = await import("../../src/lib/storage.js");
 
 describe("storage (R2 via the S3 API)", () => {
   beforeEach(() => {
@@ -63,5 +63,25 @@ describe("storage (R2 via the S3 API)", () => {
   it("throws a clear error when R2 credentials are missing, without ever calling the SDK", async () => {
     delete process.env.R2_ACCOUNT_ID;
     await expect(uploadRunArtifact("k", new Uint8Array(), "text/plain")).rejects.toThrow("Missing env var R2_ACCOUNT_ID");
+  });
+});
+
+describe("publicRunArtifactUrl", () => {
+  afterEach(() => {
+    delete process.env.R2_PUBLIC_BASE_URL;
+  });
+
+  it("joins the configured public base URL and key, no network call", () => {
+    process.env.R2_PUBLIC_BASE_URL = "https://pub-abc123.r2.dev";
+    expect(publicRunArtifactUrl("runs/xyz/video.mp4")).toBe("https://pub-abc123.r2.dev/runs/xyz/video.mp4");
+  });
+
+  it("strips a trailing slash from the base URL", () => {
+    process.env.R2_PUBLIC_BASE_URL = "https://pub-abc123.r2.dev/";
+    expect(publicRunArtifactUrl("runs/xyz/video.mp4")).toBe("https://pub-abc123.r2.dev/runs/xyz/video.mp4");
+  });
+
+  it("returns undefined when not configured, so callers fall back to a presigned URL", () => {
+    expect(publicRunArtifactUrl("runs/xyz/video.mp4")).toBeUndefined();
   });
 });

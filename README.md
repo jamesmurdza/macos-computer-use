@@ -117,9 +117,12 @@ R2_SECRET_ACCESS_KEY=...
 R2_BUCKET=...
 ```
 
-Optional: `MODEL=sonnet` picks a model, `RESOLUTION=1280x720` shrinks the recorded video. Without
-the R2 vars, it still runs end-to-end and just skips the upload. See [testing.md](testing.md) for
-the JSONL log's schema and more detail.
+Optional: `MODEL=sonnet` picks a model, `RESOLUTION=1280x720` shrinks the recorded video,
+`AGENT_RUN_ANTHROPIC_API_KEY` uses a different Anthropic key for this script only (kept out of
+`ANTHROPIC_API_KEY`, which the web app auto-loads from `.env`), and `R2_PUBLIC_BASE_URL` (a
+bucket's public `pub-*.r2.dev` domain) prints plain permanent links instead of presigned ones.
+Without the R2 vars, it still runs end-to-end and just skips the upload. See
+[testing.md](testing.md) for the JSONL log's schema and more detail.
 
 ## Test
 
