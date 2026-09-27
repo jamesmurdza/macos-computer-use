@@ -127,9 +127,13 @@ function captionWindows(captions: CaptionEntry[]): { start: number; end: number 
 export interface CaptionBox {
   width: number;
   height: number;
+  /** The measured ink's distance from the frame's *top* edge, in PlayRes units -- see the box
+   * positioning note in buildAssScript() for why this (and not MarginV) is what the box's
+   * vertical position is actually built from. */
+  top: number;
 }
 
-const BBOX_LOG_RE = /n:(\d+)\s+pts:\S+\s+pts_time:\S+\s+x1:-?\d+\s+x2:-?\d+\s+y1:-?\d+\s+y2:-?\d+\s+w:(\d+)\s+h:(\d+)/g;
+const BBOX_LOG_RE = /n:(\d+)\s+pts:\S+\s+pts_time:\S+\s+x1:-?\d+\s+x2:-?\d+\s+y1:(-?\d+)\s+y2:-?\d+\s+w:(\d+)\s+h:(\d+)/g;
 
 /** Renders each caption's text alone (no box, 1-second-per-caption slots on a throwaway black
  * canvas, no video encoding) and reads back its actual rendered pixel bounds via the `bbox`
@@ -176,9 +180,10 @@ export async function measureCaptionBoxes(captions: CaptionEntry[], dir: string)
   const measured = new Map<number, CaptionBox>();
   for (const m of stderr.matchAll(BBOX_LOG_RE)) {
     const n = Number(m[1]);
-    const width = Number(m[2]);
-    const height = Number(m[3]);
-    if (width > 0 && height > 0) measured.set(n, { width, height });
+    const top = Number(m[2]);
+    const width = Number(m[3]);
+    const height = Number(m[4]);
+    if (width > 0 && height > 0) measured.set(n, { width, height, top });
   }
   return captions.map((c, i) => measured.get(i) ?? estimateBoxFallback(c.text));
 }
@@ -186,9 +191,13 @@ export async function measureCaptionBoxes(captions: CaptionEntry[], dir: string)
 /** Used only when the measurement pass above didn't get a reading for a given caption --
  * ~13.5px/character at Fontsize 32 is roughly what DejaVu Sans averages out to for the kind of
  * short present-tense phrases these captions actually are (verified against several real
- * measurements), which is close enough for a rarely-hit fallback path. */
+ * measurements), which is close enough for a rarely-hit fallback path. `top` has no real
+ * measurement to fall back on either, so it guesses from MarginV the way the box's position used
+ * to be computed everywhere (see buildAssScript()) -- approximate, but only ever hit for a
+ * caption whose text rendered no visible glyphs at all. */
 function estimateBoxFallback(text: string): CaptionBox {
-  return { width: Math.round(text.length * 13.5), height: 30 };
+  const height = 30;
+  return { width: Math.round(text.length * 13.5), height, top: PLAY_RES_Y - MARGIN_V - height };
 }
 
 const BOX_PAD_X = 18;
@@ -220,7 +229,17 @@ function roundedRectPath(w: number, h: number, r: number): string {
  * ASS draws higher layers on top, so the box sits behind the glyphs. The text line is positioned
  * by the ordinary Alignment/MarginV style fields (same as before, and libass handles its wrapping
  * exactly as measured); the box line instead sets an explicit `\pos` since its size and centering
- * come from the measurement pass, not from the style. */
+ * come from the measurement pass, not from the style.
+ *
+ * The box's vertical position is built from `box.top` (the ink's actual measured offset from the
+ * frame's top edge), not from `PLAY_RES_Y - MARGIN_V` the way an earlier version of this function
+ * computed it -- that assumed the rendered text's bottom pixel sits exactly on the MarginV line,
+ * which is only true for a string with descenders (g/y/p/...) reaching all the way down to what
+ * libass reserves for them. A string without one (most of these captions, e.g. "Clicking the Save
+ * button") renders with its ink sitting *above* that line by the unused descender gap, which
+ * pushed the padding this function adds asymmetric -- looked like extra margin on top and none on
+ * the bottom. Anchoring off the real measured ink position instead makes the padding symmetric
+ * regardless of which letters happen to be in a given caption. */
 export function buildAssScript(captions: CaptionEntry[], boxes: CaptionBox[]): string {
   const windows = captionWindows(captions);
   const lines: string[] = [];
@@ -235,7 +254,7 @@ export function buildAssScript(captions: CaptionEntry[], boxes: CaptionBox[]): s
     const boxW = box.width + BOX_PAD_X * 2;
     const boxH = box.height + BOX_PAD_Y * 2;
     const boxX = Math.round((PLAY_RES_X - boxW) / 2);
-    const boxY = Math.round(PLAY_RES_Y - MARGIN_V - boxH);
+    const boxY = Math.round(box.top - BOX_PAD_Y);
     const path = roundedRectPath(boxW, boxH, BOX_RADIUS);
     lines.push(`Dialogue: 0,${startTs},${endTs},Caption,,0,0,0,,{\\an7\\pos(${boxX},${boxY})\\p1${BOX_FILL}}${path}{\\p0}`);
 
