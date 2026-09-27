@@ -9,6 +9,41 @@ const PLAYBACK_SPEEDS = [0.5, 1, 1.5, 2, 4];
 const DEFAULT_SPEED = 2;
 const ALL_MODELS = "all";
 
+// Rough char-count heuristic for "does this description need a `more` toggle" -- we don't measure
+// actual rendered line count (would need a ref + layout pass), so this just approximates whether a
+// description would exceed 2 lines at the modal's font-size/width. Good enough for a "more" affordance,
+// not meant to be pixel-exact.
+const DESC_TRUNCATE_THRESHOLD = 140;
+
+function DownloadIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3v12" />
+      <path d="M7 10l5 5 5-5" />
+      <path d="M5 21h14" />
+    </svg>
+  );
+}
+
+function CaptionsIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="5" width="18" height="14" rx="3" />
+      <path d="M9.8 10.8c-.5-.6-1.2-.9-2-.9-1.4 0-2.5 1-2.5 2.3s1.1 2.3 2.5 2.3c.8 0 1.5-.3 2-.9" />
+      <path d="M17.7 10.8c-.5-.6-1.2-.9-2-.9-1.4 0-2.5 1-2.5 2.3s1.1 2.3 2.5 2.3c.8 0 1.5-.3 2-.9" />
+    </svg>
+  );
+}
+
+function RetryIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 12a9 9 0 1 1 2.6 6.3" />
+      <path d="M3 21v-6h6" />
+    </svg>
+  );
+}
+
 /**
  * Every run gets a real permalink at `/runs/<runId>` (see that route's page.tsx -- it renders this
  * same grid, server-side, with the matching entry pre-selected so a shared link, a refresh, and a
@@ -113,6 +148,7 @@ function RunModal({ entry, onClose }: { entry: GalleryEntryResolved; onClose: ()
   const [captions, setCaptions] = useState<CaptionEntry[]>([]);
   const [currentCaption, setCurrentCaption] = useState("");
   const [exportState, setExportState] = useState<"idle" | "exporting" | "error">("idle");
+  const [descExpanded, setDescExpanded] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   // Applies on mount too (not just on change) so DEFAULT_SPEED actually takes effect -- the
@@ -166,12 +202,11 @@ function RunModal({ entry, onClose }: { entry: GalleryEntryResolved; onClose: ()
     }
   }
 
+  const descIsLong = entry.description.length > DESC_TRUNCATE_THRESHOLD;
+
   return (
     <div className="gallery-modal-overlay" onClick={onClose}>
       <div className="gallery-modal" onClick={(ev) => ev.stopPropagation()}>
-        <button className="gallery-modal-close" onClick={onClose} aria-label="Close">
-          &times;
-        </button>
         <div className="gallery-video-wrap">
           <video
             ref={videoRef}
@@ -184,7 +219,25 @@ function RunModal({ entry, onClose }: { entry: GalleryEntryResolved; onClose: ()
         </div>
         <div className="gallery-modal-meta">
           <div className="gallery-modal-meta-text">
-            <span className="gallery-desc">{entry.description}</span>
+            <div className="gallery-desc-wrap">
+              <span
+                className={`gallery-desc${descExpanded ? " gallery-desc-expanded" : ""}${descIsLong ? " gallery-desc-has-toggle" : ""}`}
+              >
+                {entry.description}
+              </span>
+              {descIsLong && (
+                <button
+                  type="button"
+                  className="gallery-desc-toggle"
+                  onClick={() => setDescExpanded((v) => !v)}
+                  aria-expanded={descExpanded}
+                  aria-label={descExpanded ? "Show less" : "Show full description"}
+                  title={descExpanded ? "Show less" : "Show full description"}
+                >
+                  …
+                </button>
+              )}
+            </div>
             <span className="gallery-date">
               {formatDate(entry.date)} · {formatDuration(entry.durationMs)}
             </span>
@@ -199,19 +252,18 @@ function RunModal({ entry, onClose }: { entry: GalleryEntryResolved; onClose: ()
           <div className="gallery-modal-controls">
             <button
               type="button"
-              className="gallery-export-button"
+              className={`gallery-icon-button${exportState === "error" ? " gallery-icon-button-error" : ""}`}
               onClick={handleExport}
               disabled={exportState === "exporting"}
+              aria-label={exportState === "error" ? "Export failed — retry" : "Download video"}
+              title={exportState === "error" ? "Export failed — retry" : "Download video"}
             >
               {exportState === "exporting" ? (
-                <>
-                  <span className="gallery-spinner" aria-hidden="true" />
-                  Exporting…
-                </>
+                <span className="gallery-spinner" aria-hidden="true" />
               ) : exportState === "error" ? (
-                "Export failed — retry"
+                <RetryIcon />
               ) : (
-                "Download video"
+                <DownloadIcon />
               )}
             </button>
             <select
@@ -226,13 +278,16 @@ function RunModal({ entry, onClose }: { entry: GalleryEntryResolved; onClose: ()
                 </option>
               ))}
             </select>
-            <label className="gallery-caption-toggle">
-              Captions
-              <input type="checkbox" checked={showCaptions} onChange={(ev) => setShowCaptions(ev.target.checked)} />
-              <span className="gallery-toggle-track">
-                <span className="gallery-toggle-thumb" />
-              </span>
-            </label>
+            <button
+              type="button"
+              className={`gallery-icon-button${showCaptions ? " gallery-icon-button-active" : ""}`}
+              onClick={() => setShowCaptions((v) => !v)}
+              aria-label="Toggle captions"
+              aria-pressed={showCaptions}
+              title="Toggle captions"
+            >
+              <CaptionsIcon />
+            </button>
           </div>
         </div>
       </div>
