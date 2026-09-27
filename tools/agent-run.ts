@@ -17,10 +17,16 @@
  *
  * Usage:  npx tsx tools/agent-run.ts "use xcode to make and run a hello world script"
  *         MODEL=sonnet npx tsx tools/agent-run.ts "open safari and go to example.com"
+ *         MODEL=openrouter:qwen/qwen3.7-flash npx tsx tools/agent-run.ts "..."  # needs OPENROUTER_API_KEY
  *         RESOLUTION=1280x720 npx tsx tools/agent-run.ts "..."   # override the default resolution
  *         RESOLUTION=native npx tsx tools/agent-run.ts "..."     # keep the sandbox's native 1920x1080
  *
  * AGENT_RUN_ANTHROPIC_API_KEY / CF_PUBLIC_BASE_URL: see below, right after the `.env` load.
+ *
+ * Every run records which model actually made it (`modelChoice`, exactly as passed -- e.g.
+ * `"haiku"` or `"openrouter:qwen/qwen3.7-flash"`, no lookup table needed later) plus token counts
+ * and an estimated USD cost (src/lib/cost.ts) in both events.jsonl's run-end line and meta.json,
+ * and the gallery surfaces model + cost under the video (see src/lib/gallery.ts).
  *
  * Every JSONL line's `elapsedMs` is measured from the exact moment the recording actually
  * started (right after `recording.start()` resolves), not from process start or prompt time --
@@ -53,7 +59,8 @@ const { createSandbox } = await import("../src/lib/sandbox-handle.js");
 const { downloadRecording, setDisplayResolution, takeScreenshot } = await import("../src/lib/sandbox.js");
 const { uploadRunArtifact, getRunArtifactUrl, publicRunArtifactUrl } = await import("../src/lib/storage.js");
 const { addRunToGalleryIndex } = await import("../src/lib/gallery.js");
-const { isModelChoice, DEFAULT_MODEL_CHOICE } = await import("../src/lib/llm.js");
+const { isModelSelector, DEFAULT_MODEL_CHOICE } = await import("../src/lib/llm.js");
+const { getModelPricing, estimateCost } = await import("../src/lib/cost.js");
 
 /**
  * Applied automatically unless RESOLUTION says otherwise -- keeps recorded video files smaller
@@ -80,7 +87,9 @@ const R2_VARS = ["CF_ACCOUNT_ID", "CF_ACCESS_KEY_ID", "CF_SECRET_ACCESS_KEY", "C
 const haveR2 = R2_VARS.every((k) => !!process.env[k]);
 
 const prompt = process.argv.slice(2).join(" ") || "use xcode to make and run a hello world script";
-const modelChoice = isModelChoice(process.env.MODEL) ? process.env.MODEL : DEFAULT_MODEL_CHOICE;
+// isModelSelector (not isModelChoice) -- also accepts "openrouter:provider/model-id" for
+// experimenting with cheaper/alternative models; see src/lib/llm.ts.
+const modelChoice = isModelSelector(process.env.MODEL) ? process.env.MODEL : DEFAULT_MODEL_CHOICE;
 const resolution = parseResolution(process.env.RESOLUTION);
 
 const runId = randomUUID();
@@ -120,6 +129,8 @@ let status: "ok" | "error" = "ok";
 let errorMessage: string | undefined;
 let stepCount = 0;
 let replyBuf = "";
+let inputTokens: number | undefined;
+let outputTokens: number | undefined;
 
 try {
   if (resolution) {
@@ -154,6 +165,8 @@ try {
       errorMessage = ev.error;
       console.log(`[${t}s] STREAM ERROR: ${ev.error}`);
     } else if (ev.t === "done") {
+      inputTokens = ev.usage?.inputTokens;
+      outputTokens = ev.usage?.outputTokens;
       console.log(`${"-".repeat(70)}\n[${t}s] DONE -- ${stepCount} tool call(s)`);
     }
   }
@@ -209,6 +222,18 @@ try {
     }
   }
 
+  // Cost is an estimate against current list price (fetched live for openrouter: models, since
+  // OpenRouter's pricing API is public with no auth needed -- verified directly), not the exact
+  // amount actually billed. undefined (not 0) when pricing can't be determined, so it reads as
+  // "unknown" rather than misleadingly "free" downstream.
+  let costUsd: number | undefined;
+  const pricing = await getModelPricing(modelChoice).catch(() => undefined);
+  if (pricing) costUsd = estimateCost({ inputTokens, outputTokens }, pricing);
+  console.log(
+    `\ntokens: ${inputTokens ?? "?"} in / ${outputTokens ?? "?"} out` +
+      (costUsd !== undefined ? ` -- ~$${costUsd.toFixed(4)} (${modelChoice})` : ""),
+  );
+
   const videoEndedAt = Date.now();
   logEvent({
     ts: videoEndedAt,
@@ -220,6 +245,9 @@ try {
     reply: replyBuf.trim() || undefined,
     videoFileSize,
     sandboxRotated: rotated,
+    inputTokens,
+    outputTokens,
+    costUsd,
   });
 
   const meta = {
@@ -238,6 +266,9 @@ try {
     status,
     error: errorMessage,
     sandboxRotated: rotated,
+    inputTokens,
+    outputTokens,
+    costUsd,
   };
   writeFileSync(`${localDir}/meta.json`, JSON.stringify(meta, null, 2));
   console.log(`wrote ${localDir}/meta.json`);

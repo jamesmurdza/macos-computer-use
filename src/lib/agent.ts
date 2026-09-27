@@ -1,7 +1,9 @@
 import { anthropic } from "@ai-sdk/anthropic";
-import { type ModelMessage, stepCountIs, streamText, tool } from "ai";
+import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { type LanguageModelUsage, type ModelMessage, stepCountIs, streamText, tool } from "ai";
 import { z } from "zod";
-import { MODEL_IDS, type ModelChoice } from "./llm";
+import { requireEnv } from "./env";
+import { isOpenRouterSelector, MODEL_IDS, openRouterModelId, type ModelSelector } from "./llm";
 import { clickElement, openApp, pressKeys, typeText, uiTreeSummary } from "./sandbox";
 import { type SandboxDescriptor, type SandboxHandle, type SandboxRef, toDescriptor, withSandbox } from "./sandbox-handle";
 
@@ -90,15 +92,30 @@ function makeTools(ref: SandboxRef) {
 }
 
 /**
+ * `tools/agent-run.ts` only: `openrouter:...` selectors go through OpenRouter (still the AI SDK,
+ * just a different provider package -- `@openrouter/ai-sdk-provider`) instead of Anthropic direct.
+ * Built fresh per call rather than once at module scope, so importing this module never requires
+ * OPENROUTER_API_KEY to be set -- only actually selecting an openrouter: model does (the web app
+ * and default haiku/sonnet/opus usage never touch this branch at all).
+ */
+function resolveLanguageModel(selector: ModelSelector) {
+  if (isOpenRouterSelector(selector)) {
+    const openrouterProvider = createOpenRouter({ apiKey: requireEnv("OPENROUTER_API_KEY") });
+    return openrouterProvider(openRouterModelId(selector));
+  }
+  return anthropic(MODEL_IDS[selector]);
+}
+
+/**
  * Shared request options for both the buffered (generateText) and streaming (streamText) paths.
  *
  * Opus's safety classifier declines "automate this Mac" prompts under the cyber category, so an
  * Opus request opts into Anthropic's server-side fallback routing (a decline is re-run on the
  * recommended fallback model within the same call) via the beta header and provider option.
  */
-function agentRequest(messages: ModelMessage[], modelChoice: ModelChoice, tools: ReturnType<typeof makeTools>) {
+function agentRequest(messages: ModelMessage[], modelChoice: ModelSelector, tools: ReturnType<typeof makeTools>) {
   return {
-    model: anthropic(MODEL_IDS[modelChoice]),
+    model: resolveLanguageModel(modelChoice),
     system: AGENT_SYSTEM_PROMPT,
     messages,
     tools,
@@ -122,7 +139,7 @@ export type ToolName =
 /** Request-scoped input for streamAgent — no server-held singletons. */
 export interface AgentTurnInput {
   prompt: string;
-  modelChoice: ModelChoice;
+  modelChoice: ModelSelector;
   /** The sandbox this turn acts on; may be swapped in place if it times out mid-turn. */
   sandboxRef: SandboxRef;
   /** The prior conversation, supplied by the caller (the client, in this stateless design). Never mutated. */
@@ -150,8 +167,12 @@ export type AgentEvent =
   | { t: "text"; text: string; sandbox: SandboxDescriptor }
   | { t: "error"; error: string; sandbox: SandboxDescriptor }
   /** `history` is the full updated conversation on a clean finish, or the caller's original
-   *  `input.history` unchanged if the turn was aborted/errored before finishing cleanly. */
-  | { t: "done"; history: ModelMessage[]; sandbox: SandboxDescriptor };
+   *  `input.history` unchanged if the turn was aborted/errored before finishing cleanly.
+   *  `usage` is the AI SDK's own total across every internal step of this turn (it sums step
+   *  usages for you -- verified against the installed package's own type declarations, not
+   *  assumed), so it's accurate even though one `streamText()` call here can drive many tool-use
+   *  steps. Undefined if the turn threw before `streamText()` produced a result at all. */
+  | { t: "done"; history: ModelMessage[]; sandbox: SandboxDescriptor; usage?: LanguageModelUsage };
 
 /**
  * Run the agent and yield events as they happen (tool calls, tool results, streamed reply
@@ -174,6 +195,7 @@ export async function* streamAgent(input: AgentTurnInput): AsyncGenerator<AgentE
 
   let clean = true;
   let finalHistory = history;
+  let usage: LanguageModelUsage | undefined;
   try {
     const result = streamText({ ...agentRequest(messages, modelChoice, tools), abortSignal: signal });
     for await (const part of result.fullStream) {
@@ -203,10 +225,17 @@ export async function* streamAgent(input: AgentTurnInput): AsyncGenerator<AgentE
       const responseMessages = await result.responseMessages;
       finalHistory = [...messages, ...responseMessages];
     }
+    // Read regardless of `clean`: an aborted/errored-but-not-thrown turn still consumed (and
+    // costs) tokens, worth recording even though history isn't updated in that case.
+    try {
+      usage = await result.usage;
+    } catch {
+      usage = undefined;
+    }
   } catch (err) {
     // An aborted stream throws AbortError — expected when the user hits Stop, not a real error.
     const aborted = signal?.aborted || (err instanceof Error && err.name === "AbortError");
     if (!aborted) yield { t: "error", error: err instanceof Error ? err.message : String(err), sandbox: sandbox() };
   }
-  yield { t: "done", history: finalHistory, sandbox: sandbox() };
+  yield { t: "done", history: finalHistory, sandbox: sandbox(), usage };
 }

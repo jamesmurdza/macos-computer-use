@@ -48,6 +48,9 @@ body { margin: 0; color: var(--ink); background: var(--bg); font: 14.5px/1.55 va
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
 .gallery-date { font-size: 12px; color: var(--ink-3); }
+/* Model name (+ estimated cost, when known) -- same visual weight as .gallery-date, just its own
+   line so a long OpenRouter model id ("openrouter:qwen/qwen3.7-flash") doesn't crowd the date. */
+.gallery-run-meta { font-size: 12px; color: var(--ink-3); font-family: var(--mono); }
 
 .gallery-modal-overlay {
   position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;

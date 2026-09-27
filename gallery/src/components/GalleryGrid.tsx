@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { GalleryEntryResolved } from "../lib/gallery";
-import { formatDate, formatDuration } from "../lib/gallery";
+import { formatCost, formatDate, formatDuration } from "../lib/gallery";
 import { captionAt, parseCaptions, type CaptionEntry } from "../lib/captions";
 
 const PLAYBACK_SPEEDS = [0.5, 1, 1.5, 2, 4];
@@ -125,6 +125,12 @@ function RunModal({ entry, onClose }: { entry: GalleryEntryResolved; onClose: ()
             <span className="gallery-date">
               {formatDate(entry.date)} · {formatDuration(entry.durationMs)}
             </span>
+            {entry.model && (
+              <span className="gallery-run-meta">
+                {entry.model}
+                {entry.costUsd !== undefined && <> · ~{formatCost(entry.costUsd)}</>}
+              </span>
+            )}
           </div>
           <div className="gallery-modal-controls">
             <select

@@ -8,7 +8,9 @@ loading that URL directly (a shared link, a refresh, a crawler) server-renders t
 that run's modal already open, including proper Open Graph/Twitter card metadata (title + thumbnail
 image) for link previews. The modal also overlays a synced caption bar (each `tool-call`'s
 `summary`, error messages, and the final reply, timed against `events.jsonl`'s `elapsedMs`), with a
-toggle switch to hide it and a playback speed selector (defaults to 2×).
+toggle switch to hide it and a playback speed selector (defaults to 2×), and shows which model ran
+(plus an estimated USD cost, when the writer could determine pricing for that model) underneath the
+video.
 
 This is a **completely separate app** from the main project on purpose — no shared dependencies,
 no shared code, no shared credentials. It only ever does a plain public `fetch()` against a
@@ -98,5 +100,9 @@ doesn't make Turbopack guess at a monorepo root.
   button was positioned with a negative offset outside `.gallery-modal`'s bounds, and that
   element's `overflow: auto` was silently clipping it to a barely-visible sliver. Fixed by keeping
   it inside the box, overlaid on the video's top-right corner instead of floating outside it.
-- No test suite yet (`formatDuration`/`formatDate` are pure and worth unit-testing if this grows;
-  `typecheck`/`build` are the only checks today).
+- No test suite yet (`formatDuration`/`formatDate`/`formatCost` are pure and worth unit-testing if
+  this grows; `typecheck`/`build` are the only checks today).
+- `GalleryEntry.model`/`inputTokens`/`outputTokens`/`costUsd` are optional-by-construction on the
+  writer side (the main project's `src/lib/cost.ts` leaves `costUsd` `undefined`, not `0`, when it
+  can't price a model), so the modal only renders a cost when one is actually known instead of
+  showing a misleading "$0.00".
