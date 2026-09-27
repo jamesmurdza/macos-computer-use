@@ -105,10 +105,11 @@ recording a session to review later:
 npx tsx tools/agent-run.ts "use xcode to make and run a hello world script"
 ```
 
-This creates its own sandbox, records the whole run as video (native to the use.computer gateway —
-no extra setup) and writes a timestamped JSONL log of every tool call, result, and reply.
-Everything is saved locally to `/tmp/logs/runs/<runId>/`, and — if these four extra vars are set in
-`.env` — also uploaded to a Cloudflare R2 bucket:
+This creates its own sandbox, shrinks its resolution to 800x600 by default (see `RESOLUTION`
+below), records the whole run as video (native to the use.computer gateway — no extra setup) and
+writes a timestamped JSONL log of every tool call, result, and reply. Everything is saved locally
+to `/tmp/logs/runs/<runId>/`, and — if these four extra vars are set in `.env` — also uploaded to a
+Cloudflare R2 bucket:
 
 ```
 CF_ACCOUNT_ID=...
@@ -117,7 +118,8 @@ CF_SECRET_ACCESS_KEY=...
 CF_BUCKET=...
 ```
 
-Optional: `MODEL=sonnet` picks a model, `RESOLUTION=1280x720` shrinks the recorded video,
+Optional: `MODEL=sonnet` picks a model, `RESOLUTION=1280x720` overrides the default resolution
+(`RESOLUTION=native` keeps the sandbox's full 1920x1080 instead of shrinking it),
 `AGENT_RUN_ANTHROPIC_API_KEY` uses a different Anthropic key for this script only (kept out of
 `ANTHROPIC_API_KEY`, which the web app auto-loads from `.env`), and `CF_PUBLIC_BASE_URL` (a
 bucket's public `pub-*.r2.dev` domain) prints plain permanent links instead of presigned ones.

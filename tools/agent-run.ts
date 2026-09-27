@@ -17,7 +17,8 @@
  *
  * Usage:  npx tsx tools/agent-run.ts "use xcode to make and run a hello world script"
  *         MODEL=sonnet npx tsx tools/agent-run.ts "open safari and go to example.com"
- *         RESOLUTION=1280x720 npx tsx tools/agent-run.ts "..."   # shrink the recorded video
+ *         RESOLUTION=1280x720 npx tsx tools/agent-run.ts "..."   # override the default resolution
+ *         RESOLUTION=native npx tsx tools/agent-run.ts "..."     # keep the sandbox's native 1920x1080
  *
  * AGENT_RUN_ANTHROPIC_API_KEY / CF_PUBLIC_BASE_URL: see below, right after the `.env` load.
  *
@@ -54,10 +55,19 @@ const { uploadRunArtifact, getRunArtifactUrl, publicRunArtifactUrl } = await imp
 const { addRunToGalleryIndex } = await import("../src/lib/gallery.js");
 const { isModelChoice, DEFAULT_MODEL_CHOICE } = await import("../src/lib/llm.js");
 
+/**
+ * Applied automatically unless RESOLUTION says otherwise -- keeps recorded video files small by
+ * default. 800x600 is the smallest usable mode this virtual display supports (see testing.md's
+ * "Display resolution" section for the full list of 11 verified modes).
+ */
+const DEFAULT_RESOLUTION = { width: 800, height: 600 };
+
 function parseResolution(v: string | undefined): { width: number; height: number } | undefined {
-  if (!v) return undefined;
-  const m = /^(\d+)x(\d+)$/.exec(v.trim());
-  if (!m) throw new Error(`RESOLUTION must look like "1280x720", got "${v}"`);
+  if (v === undefined) return DEFAULT_RESOLUTION;
+  const trimmed = v.trim();
+  if (trimmed.toLowerCase() === "native") return undefined; // explicit opt-out -- keep the sandbox's native 1920x1080
+  const m = /^(\d+)x(\d+)$/.exec(trimmed);
+  if (!m) throw new Error(`RESOLUTION must look like "1280x720" or "native" (to skip resizing), got "${v}"`);
   return { width: Number(m[1]), height: Number(m[2]) };
 }
 
