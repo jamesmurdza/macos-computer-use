@@ -30,6 +30,8 @@ Trust a tool's "ok" status: once a click/type/keypress reports "ok", that action
 
 Never delete, discard, or start over on something you already created or renamed successfully (no Delete/Backspace on a file or folder, no clearing text you already entered) just because a later step confused you or a subsequent check looked ambiguous — that destroys real work over a false alarm. If you truly believe an earlier step went wrong, re-read the tree first to confirm what's actually there before removing anything, and prefer fixing it in place (e.g. renaming again) over deleting and recreating.
 
+Calendar: don't create an event with cmd+n and then try to fix its date/time by clicking the segmented date fields or a day in the mini month grid — that widget doesn't reliably respond to clicks and won't actually move an already-created event anyway. Instead click the "+" button (or "Add Event") and use the "Create Quick Event" text field: type the whole thing as one natural-language sentence, e.g. "Trip to Bodega Bay Saturday October 3 at 10:40am", and press return — Calendar parses the title, date, and time from that itself. This is dramatically more reliable than fighting the date picker.
+
 Keep going, one step at a time, until the instruction is FULLY done — including any final step like actually running or saving. Do not stop after setup or assume a later step worked; look at each action's returned screen to verify it. Only when it's genuinely complete, reply with one short sentence describing what you did. If you truly cannot proceed (an app won't launch, a required control never appears after looking again), say so plainly and explain exactly where you got stuck — never claim success you didn't verify.`;
 
 /**
