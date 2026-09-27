@@ -106,16 +106,18 @@ function RunModal({ entry, onClose }: { entry: GalleryEntryResolved; onClose: ()
           {showCaptions && currentCaption && <div className="gallery-caption">{currentCaption}</div>}
         </div>
         <div className="gallery-modal-meta">
-          <span className="gallery-desc">{entry.description}</span>
-          <span className="gallery-date">
-            {formatDate(entry.date)} · {formatDuration(entry.durationMs)}
-          </span>
+          <div className="gallery-modal-meta-text">
+            <span className="gallery-desc">{entry.description}</span>
+            <span className="gallery-date">
+              {formatDate(entry.date)} · {formatDuration(entry.durationMs)}
+            </span>
+          </div>
           <label className="gallery-caption-toggle">
+            Captions
             <input type="checkbox" checked={showCaptions} onChange={(ev) => setShowCaptions(ev.target.checked)} />
             <span className="gallery-toggle-track">
               <span className="gallery-toggle-thumb" />
             </span>
-            Show agent captions
           </label>
         </div>
       </div>

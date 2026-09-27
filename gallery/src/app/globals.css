@@ -60,23 +60,23 @@ body { margin: 0; color: var(--ink); background: var(--bg); font: 14.5px/1.55 va
 }
 .gallery-modal video { display: block; width: 100%; border-radius: 10px; background: #000; }
 .gallery-video-wrap { position: relative; }
-/* Top, not bottom: native <video controls> owns the bottom edge (scrubber, play/pause), and
-   overlapping that gets crowded/unreliable across browsers. Same visual language as
-   .gallery-duration/.chip elsewhere -- a translucent dark pill over the video. */
+/* bottom, clear of native <video controls>' scrubber/play bar (~40px tall in Chromium/Safari) --
+   sits just above it rather than overlapping. Same visual language as .gallery-duration/.chip
+   elsewhere -- a translucent dark pill over the video. */
 .gallery-caption {
-  /* max-width leaves clearance on both sides for .gallery-modal-close (top-right, ~30px wide) --
-     checked against the longest realistic caption (a full run-end reply, ~160 chars) which
-     otherwise runs right up against it. */
-  position: absolute; top: 12px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 100px);
+  /* max-width leaves clearance on both sides -- checked against the longest realistic caption (a
+     full run-end reply, ~160 chars). */
+  position: absolute; bottom: 48px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 32px);
   background: rgba(10, 9, 8, .72); backdrop-filter: blur(6px); color: #ece6da;
   border: 1px solid rgba(255, 255, 255, .1); border-radius: 10px; padding: 7px 12px;
   font-family: var(--sans); font-size: 13px; line-height: 1.4; text-align: center;
 }
-.gallery-modal-meta { display: flex; flex-direction: column; gap: 4px; padding: 14px 6px 4px; }
+.gallery-modal-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 6px 4px; }
+.gallery-modal-meta-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .gallery-modal-meta .gallery-desc { -webkit-line-clamp: unset; font-size: 14px; }
 .gallery-caption-toggle {
-  display: inline-flex; align-items: center; gap: 8px; margin-top: 10px; cursor: pointer; user-select: none;
-  font-size: 12.5px; color: var(--ink-2); width: fit-content;
+  display: inline-flex; align-items: center; gap: 8px; flex: none; cursor: pointer; user-select: none;
+  font-size: 12.5px; color: var(--ink-2);
 }
 .gallery-caption-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
 .gallery-toggle-track {
