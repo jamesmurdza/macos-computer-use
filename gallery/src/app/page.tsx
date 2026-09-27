@@ -1,8 +1,8 @@
 import { loadGalleryIndex } from "../lib/gallery";
 import { GalleryGrid } from "../components/GalleryGrid";
 
-// Always fetch a fresh index -- this is a dashboard over what's actually in KV right now, not
-// something that benefits from Next.js's default static/ISR caching.
+// Always fetch a fresh index.json -- this is a dashboard over what's actually in the bucket right
+// now, not something that benefits from Next.js's default static/ISR caching.
 export const dynamic = "force-dynamic";
 
 export default async function GalleryPage() {
@@ -14,8 +14,8 @@ export default async function GalleryPage() {
 
       {!configured ? (
         <p className="gallery-empty">
-          Set <code>CF_ACCOUNT_ID</code>, <code>CF_API_TOKEN</code>, <code>CF_KV_NAMESPACE_ID</code>, and{" "}
-          <code>CF_PUBLIC_BASE_URL</code> to enable this page — see the README.
+          Set <code>CF_PUBLIC_BASE_URL</code> to your bucket&apos;s public domain (e.g. a{" "}
+          <code>pub-*.r2.dev</code> URL) to enable this page.
         </p>
       ) : entries.length === 0 ? (
         <p className="gallery-empty">No recordings yet.</p>

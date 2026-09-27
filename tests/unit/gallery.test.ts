@@ -3,18 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../src/lib/storage.js", () => ({
   listRunIds: vi.fn(),
   downloadRunArtifact: vi.fn(),
-}));
-vi.mock("../../src/lib/kv.js", () => ({
-  getKvValue: vi.fn(),
-  putKvValue: vi.fn(async () => {}),
+  uploadRunArtifact: vi.fn(async () => {}),
 }));
 
-const { listRunIds, downloadRunArtifact } = await import("../../src/lib/storage.js");
-const { getKvValue, putKvValue } = await import("../../src/lib/kv.js");
+const { listRunIds, downloadRunArtifact, uploadRunArtifact } = await import("../../src/lib/storage.js");
 const { rebuildGalleryIndex, addRunToGalleryIndex } = await import("../../src/lib/gallery.js");
 
-function metaBytes(meta: unknown): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify(meta));
+function jsonBytes(value: unknown): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(value));
 }
 
 const OLD_OK_META = {
@@ -34,19 +30,19 @@ const NEW_OK_META = {
   status: "ok" as const,
 };
 
-describe("rebuildGalleryIndex (repair/backfill: scans R2, writes the whole index to KV)", () => {
+describe("rebuildGalleryIndex (repair/backfill: scans R2 meta.json files, overwrites index.json)", () => {
   beforeEach(() => {
     vi.mocked(listRunIds).mockReset();
     vi.mocked(downloadRunArtifact).mockReset();
-    vi.mocked(putKvValue).mockClear();
+    vi.mocked(uploadRunArtifact).mockClear();
   });
 
-  it("includes only status:ok runs with a video, newest first, and writes the KV index", async () => {
+  it("includes only status:ok runs with a video, newest first, and writes index.json", async () => {
     vi.mocked(listRunIds).mockResolvedValue(["run-old-ok", "run-failed", "run-new-ok", "run-corrupt"]);
     vi.mocked(downloadRunArtifact).mockImplementation(async (key: string) => {
-      if (key === "runs/run-old-ok/meta.json") return metaBytes(OLD_OK_META);
-      if (key === "runs/run-failed/meta.json") return metaBytes({ runId: "run-failed", prompt: "do something", status: "error" });
-      if (key === "runs/run-new-ok/meta.json") return metaBytes(NEW_OK_META);
+      if (key === "runs/run-old-ok/meta.json") return jsonBytes(OLD_OK_META);
+      if (key === "runs/run-failed/meta.json") return jsonBytes({ runId: "run-failed", prompt: "do something", status: "error" });
+      if (key === "runs/run-new-ok/meta.json") return jsonBytes(NEW_OK_META);
       if (key === "runs/run-corrupt/meta.json") return new TextEncoder().encode("{not json");
       return undefined;
     });
@@ -60,7 +56,7 @@ describe("rebuildGalleryIndex (repair/backfill: scans R2, writes the whole index
       videoKey: "runs/run-new-ok/video.mp4",
       thumbnailKey: "runs/run-new-ok/thumbnail.jpg",
     });
-    expect(putKvValue).toHaveBeenCalledWith("index", JSON.stringify(entries));
+    expect(uploadRunArtifact).toHaveBeenCalledWith("index.json", expect.any(Uint8Array), "application/json");
   });
 
   it("skips a run whose meta.json is missing entirely", async () => {
@@ -72,20 +68,20 @@ describe("rebuildGalleryIndex (repair/backfill: scans R2, writes the whole index
   });
 });
 
-describe("addRunToGalleryIndex (normal per-run path: one KV read + one KV write)", () => {
+describe("addRunToGalleryIndex (normal per-run path: one read + one write against index.json)", () => {
   beforeEach(() => {
-    vi.mocked(getKvValue).mockReset();
-    vi.mocked(putKvValue).mockClear();
+    vi.mocked(downloadRunArtifact).mockReset();
+    vi.mocked(uploadRunArtifact).mockClear();
   });
 
   it("appends to an empty/missing index", async () => {
-    vi.mocked(getKvValue).mockResolvedValue(undefined);
+    vi.mocked(downloadRunArtifact).mockResolvedValue(undefined);
 
     const entries = await addRunToGalleryIndex("run-new-ok", NEW_OK_META);
 
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ runId: "run-new-ok", videoKey: "runs/run-new-ok/video.mp4" });
-    expect(putKvValue).toHaveBeenCalledWith("index", JSON.stringify(entries));
+    expect(uploadRunArtifact).toHaveBeenCalledWith("index.json", expect.any(Uint8Array), "application/json");
   });
 
   it("prepends a new run ahead of an existing older one (newest first)", async () => {
@@ -99,7 +95,7 @@ describe("addRunToGalleryIndex (normal per-run path: one KV read + one KV write)
         thumbnailKey: "runs/run-old-ok/thumbnail.jpg",
       },
     ];
-    vi.mocked(getKvValue).mockResolvedValue(JSON.stringify(existing));
+    vi.mocked(downloadRunArtifact).mockResolvedValue(jsonBytes(existing));
 
     const entries = await addRunToGalleryIndex("run-new-ok", NEW_OK_META);
 
@@ -117,7 +113,7 @@ describe("addRunToGalleryIndex (normal per-run path: one KV read + one KV write)
         thumbnailKey: "runs/run-new-ok/thumbnail.jpg",
       },
     ];
-    vi.mocked(getKvValue).mockResolvedValue(JSON.stringify(existing));
+    vi.mocked(downloadRunArtifact).mockResolvedValue(jsonBytes(existing));
 
     const entries = await addRunToGalleryIndex("run-new-ok", NEW_OK_META);
 
@@ -126,16 +122,16 @@ describe("addRunToGalleryIndex (normal per-run path: one KV read + one KV write)
   });
 
   it("does not add a failed run, and leaves the index untouched", async () => {
-    vi.mocked(getKvValue).mockResolvedValue(undefined);
+    vi.mocked(downloadRunArtifact).mockResolvedValue(undefined);
 
     const entries = await addRunToGalleryIndex("run-failed", { runId: "run-failed", prompt: "do something", status: "error" });
 
     expect(entries).toEqual([]);
-    expect(putKvValue).not.toHaveBeenCalled();
+    expect(uploadRunArtifact).not.toHaveBeenCalled();
   });
 
-  it("treats a corrupt existing KV value as an empty index rather than throwing", async () => {
-    vi.mocked(getKvValue).mockResolvedValue("{not json");
+  it("treats a corrupt existing index as empty rather than throwing", async () => {
+    vi.mocked(downloadRunArtifact).mockResolvedValue(new TextEncoder().encode("{not json"));
 
     const entries = await addRunToGalleryIndex("run-new-ok", NEW_OK_META);
     expect(entries).toHaveLength(1);

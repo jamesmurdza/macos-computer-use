@@ -5,7 +5,7 @@
  *   - writes a structured, timestamped JSONL log of every agent event,
  *   - captures a thumbnail screenshot of wherever the run ended up,
  *   - uploads the video, the log, the thumbnail, and a small metadata file to Cloudflare R2,
- *   - adds this run to the gallery index, a JSON value in Cloudflare KV (see src/lib/gallery.ts),
+ *   - adds this run to the gallery index, a JSON object also in R2 (see src/lib/gallery.ts),
  * so a later tool can overlay the log onto the video, and so every recorded run shows up in the
  * gallery without any manual step.
  *
@@ -68,12 +68,6 @@ function extensionFor(contentType: string): string {
 
 const R2_VARS = ["CF_ACCOUNT_ID", "CF_ACCESS_KEY_ID", "CF_SECRET_ACCESS_KEY", "CF_BUCKET"];
 const haveR2 = R2_VARS.every((k) => !!process.env[k]);
-
-// KV is separate from R2 above (different Cloudflare product, different auth -- see kv.ts):
-// CF_ACCOUNT_ID is shared, but CF_API_TOKEN/CF_KV_NAMESPACE_ID are KV-specific, so it's possible
-// to have R2 configured without KV (or vice versa) -- gated independently.
-const KV_VARS = ["CF_ACCOUNT_ID", "CF_API_TOKEN", "CF_KV_NAMESPACE_ID"];
-const haveKv = KV_VARS.every((k) => !!process.env[k]);
 
 const prompt = process.argv.slice(2).join(" ") || "use xcode to make and run a hello world script";
 const modelChoice = isModelChoice(process.env.MODEL) ? process.env.MODEL : DEFAULT_MODEL_CHOICE;
@@ -258,17 +252,13 @@ try {
       console.log(`  events: ${eventsUrl}`);
       if (videoUrl) console.log(`  video:  ${videoUrl}`);
 
-      // Add this run to the gallery index (Cloudflare KV, see src/lib/gallery.ts) -- an O(1)
-      // incremental write, not the full-bucket rebuild tools/rebuild-gallery-index.ts does.
-      if (haveKv) {
-        try {
-          const entries = await addRunToGalleryIndex(runId, meta);
-          console.log(`gallery index updated: ${entries.length} run(s) total`);
-        } catch (err) {
-          console.error("Failed to update the gallery index (this run's own artifacts are still uploaded fine):", err instanceof Error ? err.message : err);
-        }
-      } else {
-        console.log(`(${KV_VARS.join("/")} not all set -- skipping gallery index update)`);
+      // Add this run to the gallery index (index.json, also in R2 -- see src/lib/gallery.ts) --
+      // an O(1) incremental write, not the full-bucket rebuild tools/rebuild-gallery-index.ts does.
+      try {
+        const entries = await addRunToGalleryIndex(runId, meta);
+        console.log(`gallery index updated: ${entries.length} run(s) total`);
+      } catch (err) {
+        console.error("Failed to update the gallery index (this run's own artifacts are still uploaded fine):", err instanceof Error ? err.message : err);
       }
     } catch (err) {
       console.error(`R2 upload failed (artifacts are still intact locally at ${localDir}):`, err instanceof Error ? err.message : err);
