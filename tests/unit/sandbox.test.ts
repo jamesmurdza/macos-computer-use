@@ -93,6 +93,45 @@ describe("uiTreeSummary", () => {
     expect(json).toContain("…(truncated");
   });
 
+  it("never cuts truncation in the middle of a string, even when the cap lands there", async () => {
+    // Regression: verified against a real agent run that a naive `json.slice(0, maxChars)` +
+    // suffix routinely lands mid-string on a large document, producing
+    // `..."label":"Jordan Riv…(truncated, 23426 chars total)` -- text that reads exactly like a
+    // real (if oddly-named) element label, fused onto a real one with no separator. The model took
+    // that bait and called click_element with the literal truncation marker as the label. Sweep
+    // every maxChars from 1 up through comfortably past the real JSON's length so the boundary is
+    // hit at every possible offset, not just one lucky/unlucky value -- and specifically assert
+    // the fused-label shape (a quote immediately followed by the marker, no separator) never
+    // occurs, not just that some marker is present somewhere.
+    const withLongLabel = {
+      applications: [{ info: { name: "Safari", active: true }, windows: [1] }],
+      windows: [
+        {
+          name: "fw9.pdf",
+          owner: "Safari",
+          role: "app",
+          is_on_screen: true,
+          children: [{ name: "Jordan Rivera and a long run of ordinary text well past any reasonable cap", role: "AXStaticText", bbox: [0, 0, 100, 20] }],
+        },
+      ],
+    };
+    const fullJson = JSON.stringify({
+      note: undefined,
+      apps: [{ name: "Safari", active: true }],
+      menus: [],
+      windows: [{ app: "Safari", role: "app", title: "fw9.pdf", elements: [{ role: "AXStaticText", label: withLongLabel.windows[0].children[0].name }] }],
+    });
+    for (let maxChars = 1; maxChars < fullJson.length + 5; maxChars++) {
+      const json = await uiTreeSummary(fakeSandbox(withLongLabel), { maxChars });
+      if (!json.includes("truncated")) continue; // maxChars was big enough that nothing was cut
+      const dataPart = json.slice(0, json.indexOf("\n…(truncated"));
+      // A left-open string (the actual failure mode: the marker fused onto live text with no
+      // closing quote in between) means an odd number of unescaped quotes in what's kept.
+      const quoteCount = (dataPart.match(/(?<!\\)"/g) ?? []).length;
+      expect(quoteCount % 2).toBe(0);
+    }
+  });
+
   it("gives an empty-but-interactive element a synthetic label instead of dropping it", async () => {
     // Regression: verified against a real sandbox that a brand-new, empty Notes document's entire
     // editor is exactly this -- an AXTextArea with no name, description, or value at all -- which

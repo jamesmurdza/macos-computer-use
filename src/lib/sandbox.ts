@@ -281,6 +281,37 @@ export interface UiSummaryOptions {
 }
 
 /**
+ * Cuts a JSON string down to (approximately) `maxChars`, without ever cutting in the middle of a
+ * string literal.
+ *
+ * Regression, verified against a real agent run: the naive version of this (a plain
+ * `json.slice(0, maxChars)` with a human-readable suffix glued directly onto it) routinely lands
+ * mid-string on a large document (a long IRS PDF form, in this case) -- producing something like
+ * `..."label":"Jordan Riv…(truncated, 23426 chars total)`, i.e. text that reads exactly like a
+ * real (very oddly-named) element label, glued right onto a real one with no separator. The model
+ * took that bait twice in the same run, calling click_element with the literal label
+ * `"(23426 chars total)"` -- the truncation marker itself, mistaken for something real on screen.
+ * Scanning for string boundaries (toggling on every unescaped `"`) and only cutting once we're
+ * back outside a string avoids ever producing that shape again; a newline before the marker also
+ * keeps it visually and structurally distinct from any preceding JSON value.
+ */
+function truncateJsonSafely(json: string, maxChars: number): string {
+  let inString = false;
+  let cut = maxChars;
+  for (let i = 0; i < maxChars; i++) {
+    if (json[i] === '"' && json[i - 1] !== "\\") inString = !inString;
+  }
+  if (inString) {
+    // Still inside a string at the cap -- extend forward to that string's closing quote (or to
+    // the end of the JSON, if the string itself is what's enormous) rather than slicing through it.
+    cut = json.indexOf('"', maxChars);
+    if (cut === -1) cut = json.length;
+    else cut += 1; // include the closing quote itself
+  }
+  return `${json.slice(0, cut)}\n…(truncated, ${json.length} chars total)`;
+}
+
+/**
  * Turn a raw uiTree() dump into a compact JSON summary of what's on screen — running/frontmost
  * apps, and per on-screen window (including dialogs, sheets and alerts, each with its role) a
  * pruned accessibility tree. Only obvious OS chrome is dropped, so a blocking dialog is never
@@ -324,11 +355,8 @@ function summarizeTree(raw: UiTreeResponse, opts: UiSummaryOptions = {}): string
     : undefined;
 
   // note first so this key diagnostic survives the char cap even when windows is large.
-  let json = JSON.stringify({ note, apps, menus, windows });
-  if (json.length > maxChars) {
-    json = `${json.slice(0, maxChars)}…(truncated, ${json.length} chars total)`;
-  }
-  return json;
+  const json = JSON.stringify({ note, apps, menus, windows });
+  return json.length > maxChars ? truncateJsonSafely(json, maxChars) : json;
 }
 
 /**
