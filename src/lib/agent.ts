@@ -32,14 +32,20 @@ Never delete, discard, or start over on something you already created or renamed
 
 Calendar: don't create an event with cmd+n and then try to fix its date/time by clicking the segmented date fields or a day in the mini month grid — that widget doesn't reliably respond to clicks and won't actually move an already-created event anyway. Instead click the "+" button (or "Add Event") and use the "Create Quick Event" text field: type the whole thing as one natural-language sentence, e.g. "Trip to Bodega Bay Saturday October 3 at 10:40am", and press return — Calendar parses the title, date, and time from that itself. This is dramatically more reliable than fighting the date picker.
 
-Filling out a PDF form Safari is displaying inline (e.g. you navigated straight to a .pdf URL -- it doesn't auto-download like a normal file): this is a short, exact sequence, verified step by step against a real sandbox -- follow it directly rather than exploring alternatives, which are all dead ends here (the File menu, cmd+p/Print, cmd+shift+s, checking Downloads instead of Documents, and pressing cmd+s more than once all lead nowhere and just waste steps).
+Filling out a PDF form Safari is displaying inline (e.g. you navigated straight to a .pdf URL -- it doesn't auto-download like a normal file): this is a short, exact sequence, verified step by step against a real sandbox -- follow it directly rather than exploring alternatives, which are all dead ends for this first save (the File menu, cmd+p/Print, cmd+shift+s, checking Downloads instead of Documents, and pressing cmd+s more than once all lead nowhere and just waste steps here in Safari).
   1. press_keys("cmd+s") -- exactly once. A real Save sheet appears with the filename pre-filled and a Save button.
   2. click_element("Save", role: "button") -- saves it to Documents with the default filename. Don't type a new filename unless you actually need to; don't press cmd+s again.
   3. open_app the app you need for filling it in (e.g. Preview). Its response will very likely say it's "frontmost but showing no window" -- that's normal and expected here, not a problem: unlike TextEdit, Preview doesn't create a blank document on launch, so it has nothing to show until you open a file. Don't read that note as something being broken; go straight to the next step.
   4. press_keys("cmd+o") to open its file picker, then click_element("Documents") in the sidebar. If no file picker appears in the very next screen, it's a one-off timing miss, not a sign the app is broken -- press_keys("cmd+o") again (or click_element("File") then click_element("Open…")) before considering anything else; this reliably works within a try or two.
   5. click_element on the exact filename you saved (e.g. "fw9.pdf") in the file list, then click_element("Open", role: "button").
   6. Immediately close Safari's original copy (open_app("Safari"), then press_keys("cmd+w")) before filling in anything. Skipping this is a real, observed failure mode: Safari's inline PDF and the new Preview window both stay open showing the identical-looking form with identically-labeled empty fields, and click_element/type_text calls that don't pin down "app" can silently land in whichever copy happens to match first -- ending up with some fields filled in Safari and others in Preview, neither one complete. With only one copy left open, every subsequent click has one obvious target and this can't happen.
-Now fill in the fields and save, the same as any other document.
+Now fill in the fields, in the order given. For a plain text field: click_element then type_text as usual. For a checkbox or radio button on the PDF (e.g. a tax-classification box): click_element its label first; if the result reports "ok" but re-reading the tree shows nothing actually changed (this is common in Preview -- the widget itself often has no accessible element of its own, only its plain, disabled text description does), retry the exact same click_element call but add clickOffsetLeftPx: 10 -- that clicks the real glyph just to the label's left instead of the inert text, which does toggle it. Verify every field (text and checkboxes alike) actually shows the right value/state on screen before moving to the next one.
+If asked to save a copy under a new name (e.g. "save to the Desktop as X.pdf"), use exactly this sequence in Preview -- verified against a real sandbox; other paths (File > Export, a single cmd+shift+s treated as "Save As") don't work here:
+  7. press_keys("cmd+shift+s") -- in Preview this is actually "Duplicate", not "Save As": it opens a new untitled window with a copy of the document (e.g. titled "fw9 copy"). That's expected; continue.
+  8. press_keys("cmd+s") on that duplicate -- this is what actually opens a real save-with-name sheet (titled "Save"), with a "Where:" field and a filename field.
+  9. click_element("Where:", role: "pop up button"), then click_element("Desktop") in the menu that opens.
+  10. click_element the filename field (it shows the duplicate's default name, e.g. "fw9 copy"), then press_keys("cmd+a") and type_text the exact new filename you were asked for.
+  11. click_element("Save", role: "button").
 
 Keep going, one step at a time, until the instruction is FULLY done — including any final step like actually running or saving. Do not stop after setup or assume a later step worked; look at each action's returned screen to verify it. Only when it's genuinely complete, reply with one short sentence describing what you did. If you truly cannot proceed (an app won't launch, a required control never appears after looking again), say so plainly and explain exactly where you got stuck — never claim success you didn't verify.
 
@@ -68,15 +74,22 @@ function makeTools(ref: SandboxRef) {
     }),
     click_element: tool({
       description:
-        'Click an on-screen element (button, menu item, tab, checkbox, table cell, template icon, or a menu-bar menu like "File"/"Product") by its label. It finds the element in the live UI tree and clicks its center, so it works for standard and SwiftUI apps alike. Copy the exact label from read_accessibility_tree. Returns { status }: "ok", "not-found", "ambiguous" (with a candidates list — retry passing index), or "error". To use a menu, click the menu name to open it, read the tree, then click the item.',
+        'Click an on-screen element (button, menu item, tab, checkbox, table cell, template icon, or a menu-bar menu like "File"/"Product") by its label. It finds the element in the live UI tree and clicks its center, so it works for standard and SwiftUI apps alike. Copy the exact label from read_accessibility_tree. Returns { status }: "ok", "not-found", "ambiguous" (with a candidates list — retry passing index), or "error". To use a menu, click the menu name to open it, read the tree, then click the item. If clicking a checkbox/radio-button\'s own label reports "ok" but a follow-up read shows it never actually toggled, it likely isn\'t a real interactive element -- see clickOffsetLeftPx.',
       inputSchema: z.object({
         summary: z.string().describe('Short present-tense description, e.g. "Clicking the Save button".'),
         label: z.string().describe("The element's visible label/name/text, as shown in the tree."),
         role: z.string().optional().describe('Element role to disambiguate, e.g. "button", "menu item". Optional.'),
         app: z.string().optional().describe("Restrict to this app's windows. Optional."),
         index: z.number().int().optional().describe("1-based choice among candidates after an ambiguous result."),
+        clickOffsetLeftPx: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            "For a PDF form checkbox/radio button rendered by Preview whose glyph has no accessible element of its own (only its plain-text description does, e.g. label \"Individual/sole proprietor\" with role \"text\"): instead of clicking that text (which reports \"ok\" but never toggles the box), click this many pixels to the LEFT of the text's own left edge, vertically centered on it -- that's where the actual clickable glyph is. 10 is a good default, verified against a real W-9 form. Only use this when a plain click on the label itself demonstrably didn't toggle anything.",
+          ),
       }),
-      execute: ({ app, role, label, index }) => run((s) => clickElement(s, { app, role, label, index })),
+      execute: ({ app, role, label, index, clickOffsetLeftPx }) => run((s) => clickElement(s, { app, role, label, index, clickOffsetLeftPx })),
     }),
     type_text: tool({
       description:

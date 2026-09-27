@@ -615,6 +615,32 @@ describe("clickElement", () => {
     expect(execSsh).not.toHaveBeenCalled();
     expect(click).toHaveBeenCalledWith(10, 10);
   });
+
+  it("clicks to the left of a matched element's own left edge when clickOffsetLeftPx is given", async () => {
+    // Regression: verified against a real W-9 PDF form open in Preview. The "Individual/sole
+    // proprietor" tax-classification checkbox never appears as its own accessible element -- only
+    // its plain, disabled `text` description does, at bbox [284, 239, 347, 246]. Clicking that text
+    // node directly reports "ok" but never toggles the box; a raw click a few pixels to its left
+    // (where the actual glyph is drawn, verified with before/after screenshots) does. This test
+    // pins down clickOffsetLeftPx's coordinate math against that exact real bbox rather than an
+    // invented one.
+    const { sandbox, click } = fakeClickSandbox([windowWith("Preview", [node("AXStaticText", "Individual/sole proprietor", [284, 239, 347, 246])])]);
+
+    const result = await clickElement(sandbox, { label: "Individual/sole proprietor", clickOffsetLeftPx: 10 });
+
+    expect(result.status).toBe("ok");
+    // x1 (284) - 10 = 274; y is the untouched vertical center of [239, 246], Math.round(242.5) = 243.
+    expect(click).toHaveBeenCalledWith(274, 243);
+  });
+
+  it("clicks the element's own center when clickOffsetLeftPx is omitted, even though x1 is known", async () => {
+    const { sandbox, click } = fakeClickSandbox([windowWith("Preview", [node("AXButton", "Save", [284, 239, 347, 246])])]);
+
+    const result = await clickElement(sandbox, { label: "Save" });
+
+    expect(result.status).toBe("ok");
+    expect(click).toHaveBeenCalledWith(Math.round((284 + 347) / 2), expect.any(Number));
+  });
 });
 
 describe("screenshotUrl", () => {

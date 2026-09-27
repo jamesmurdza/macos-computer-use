@@ -453,6 +453,21 @@ export interface UiClickOptions {
   index?: number;
   /** How long to keep re-reading the tree while the element is absent (polling every 0.5s). */
   timeoutSeconds?: number;
+  /**
+   * Click to the LEFT of the matched element's own bounding box instead of at its center, at the
+   * given pixel distance from its left edge (vertically centered on the element). For PDF
+   * checkbox/radio-button form widgets rendered by Preview specifically -- verified against a real
+   * W-9 form: the widget itself never appears as its own accessible node (no `checkbox`/`radio
+   * button` role anywhere in the tree), only its adjacent description does, as a plain, disabled
+   * `text` node (e.g. label "Individual/sole proprietor", `enabled: false`). Clicking that text
+   * node directly returns "ok" (a real element was found and clicked) but the box never toggles --
+   * the actual clickable glyph is a separate, unlabeled region a few pixels to its left that never
+   * shows up in the accessibility tree at all. Measured against a real sandbox at 1280x960: the
+   * glyph's center sits ~6px left of the label text's own left edge, so `clickOffsetLeftPx: 10`
+   * reliably lands inside it with a little margin. Only meaningful when exactly one element
+   * matches; ignored for menu-bar items (which have no meaningful "left of the label" target).
+   */
+  clickOffsetLeftPx?: number;
 }
 
 export interface UiActionResult {
@@ -470,6 +485,10 @@ interface FoundElement {
   label: string;
   cx: number;
   cy: number;
+  /** Left edge of the element's own bounding box, when known -- used by `clickOffsetLeftPx` to
+   * click just outside the element itself (see that option's doc comment). undefined for menu-bar
+   * items, which only ever carry a center. */
+  x1?: number;
   /** The owning window's app (raw `owner`, e.g. "Preview"), so clickElement() can tell whether
    * this element's window is actually the frontmost one before clicking it -- see the comment on
    * that reactivation logic for why this matters. undefined for menu-bar items (always belong to
@@ -487,14 +506,15 @@ async function withScreen(sandbox: SandboxHandle, result: UiActionResult): Promi
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Center of a node's on-screen rectangle (prefer the visible portion), or null if it has none. */
-function nodeCenter(node: UiElementNode): { cx: number; cy: number } | null {
+/** Center (and left edge) of a node's on-screen rectangle (prefer the visible portion), or null if
+ * it has none. */
+function nodeCenter(node: UiElementNode): { cx: number; cy: number; x1: number } | null {
   const area = (b?: number[]) => (Array.isArray(b) && b.length === 4 ? Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]) : 0);
   const box = area(node.visible_bbox) > 1 ? node.visible_bbox : node.bbox;
   if (!Array.isArray(box) || box.length !== 4) return null;
   const [x1, y1, x2, y2] = box.map(Number);
   if (![x1, y1, x2, y2].every(Number.isFinite)) return null;
-  return { cx: (x1 + x2) / 2, cy: (y1 + y2) / 2 };
+  return { cx: (x1 + x2) / 2, cy: (y1 + y2) / 2, x1 };
 }
 
 /** Normalize a role for tolerant matching: lowercase, drop spaces and a leading "AX". */
@@ -694,7 +714,8 @@ export async function clickElement(sandbox: SandboxHandle, opts: UiClickOptions)
     await runAppleScript(sandbox, `tell application "${escapeAppleScript(target.app)}" to activate`);
     await sleep(400);
   }
-  await sandbox.mouse.click(Math.round(target.cx), Math.round(target.cy));
+  const clickX = opts.clickOffsetLeftPx && target.x1 !== undefined ? target.x1 - opts.clickOffsetLeftPx : target.cx;
+  await sandbox.mouse.click(Math.round(clickX), Math.round(target.cy));
   return withScreen(sandbox, { status: "ok" });
 }
 
