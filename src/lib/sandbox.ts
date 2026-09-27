@@ -445,6 +445,26 @@ export async function takeScreenshot(sandbox: SandboxHandle, opts: ScreenshotOpt
   return new Uint8Array(await res.arrayBuffer());
 }
 
+/**
+ * Download a finished recording's raw bytes, preserving the response's content-type so the
+ * caller can pick a correct file extension.
+ *
+ * Why not `sandbox.recording.download()`: use-computer-sdk's `HttpClient.getBytes()` (what that
+ * method calls) discards the response headers and returns only a `Uint8Array` -- the same
+ * metadata-loss problem `takeScreenshot()` above works around for screenshots. Verified against a
+ * real sandbox: the gateway returns `video/mp4` (a genuine ISO Media / MP4 container, confirmed
+ * with `file`), but this still returns the actual header rather than hard-coding that, in case it
+ * ever varies.
+ */
+export async function downloadRecording(sandbox: SandboxHandle, recordingId: string): Promise<{ bytes: Uint8Array; contentType: string }> {
+  const baseUrl = process.env.USE_COMPUTER_BASE_URL || DEFAULT_BASE_URL;
+  const url = `${baseUrl.replace(/\/+$/, "")}/v1/sandboxes/${sandbox.sandboxId}/recordings/${recordingId}/download`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${requireEnv("USE_COMPUTER_API_KEY")}` } });
+  if (!res.ok) throw new Error(`Recording download failed: HTTP ${res.status} ${await res.text()}`);
+  const contentType = res.headers.get("content-type") ?? "application/octet-stream";
+  return { bytes: new Uint8Array(await res.arrayBuffer()), contentType };
+}
+
 export interface SetResolutionResult {
   status: "ok" | "not-found" | "error";
   message?: string;

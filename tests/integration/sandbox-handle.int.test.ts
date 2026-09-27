@@ -16,6 +16,23 @@ describe("sandbox-handle against a real sandbox", () => {
     }
   });
 
+  it("attachSandbox()'s hand-rolled recording.start/stop matches the real SDK's wire format", async () => {
+    // recording.start()/stop() are hand-implemented in attachSandbox() (mirroring
+    // use-computer-sdk's own dist/sandbox.js by hand, same as every other method here) -- this
+    // proves that duplication is actually correct against the live gateway, not just plausible.
+    const created = await createSandbox();
+    try {
+      const attached = attachSandbox({ sandboxId: created.sandboxId, host: "", vncUrl: "" });
+      const recordingId = await attached.recording.start();
+      expect(recordingId).toBeTruthy();
+      const stopped = await attached.recording.stop(recordingId);
+      expect(stopped.recordingId).toBe(recordingId);
+      expect(stopped.fileSize).toBeGreaterThan(0);
+    } finally {
+      await created.close();
+    }
+  }, 30_000);
+
   it("withSandbox recreates the sandbox once the gateway reports the old one gone", async () => {
     const first = await createSandbox();
     const ref: SandboxRef = { current: first };

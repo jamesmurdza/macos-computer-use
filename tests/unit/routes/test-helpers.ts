@@ -9,6 +9,10 @@ export function fakeHandle(sandboxId = "sb-1"): SandboxHandle {
     vncUrl: `https://gw.example/vnc?sandbox=${sandboxId}`,
     uiTree: vi.fn(async () => ({})),
     displayInfo: vi.fn(async () => ({ width: 1920, height: 1080 })),
+    recording: {
+      start: vi.fn(async () => "rec-1"),
+      stop: vi.fn(async () => ({ recordingId: "rec-1", fileSize: 0 })),
+    },
     execSsh: vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
     upload: vi.fn(async () => {}),
     mouse: { click: vi.fn(async () => {}) },

@@ -7,6 +7,10 @@
   - `USE_COMPUTER_RESERVATION_ID` — an active Mac mini reservation; the code never reserves
   - `ANTHROPIC_API_KEY` — Claude, for the Playwright test and the app itself
   - `USE_COMPUTER_BASE_URL` — optional, defaults to `https://api.use.computer`
+  - Only needed for `tools/agent-run.ts` (see "Headless recorded runs" below), not the web app:
+    `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` — a Cloudflare R2
+    bucket + API token (Object Read & Write) to upload run artifacts to. Without these,
+    `agent-run.ts` still runs end-to-end and just skips the upload step.
 - Database: none
 - Services: use.computer gateway (real macOS VM on the reserved Mac) and the Anthropic API. No mocks anywhere.
 - Only 2 VMs can exist at once on the reservation, so never run two sandbox-creating suites in parallel.
@@ -98,3 +102,41 @@ size: { width, height } }` at runtime instead — the SDK's declared type does n
 behavior here. `SandboxHandle.displayInfo()` matches the SDK's (wrong) declared type for
 structural compatibility; anything consuming the result should defensively check for a nested
 `size` too (see `setDisplayResolution`'s own handling).
+
+## Headless recorded runs
+
+`tools/agent-run.ts` is a second headless entrypoint alongside `tools/agent-harness.ts` (the dev
+iteration tool): it drives the same production `streamAgent()`, but additionally records the
+sandbox's screen for the whole run, writes a structured JSONL event log, and uploads the video +
+log + a metadata file to Cloudflare R2 — so a later tool can overlay the log onto the video.
+
+```
+npx tsx tools/agent-run.ts "use xcode to make and run a hello world script"
+MODEL=sonnet npx tsx tools/agent-run.ts "open safari and go to example.com"
+RESOLUTION=1280x720 npx tsx tools/agent-run.ts "..."   # shrink the recorded video, see above
+```
+
+- Recording is native to the gateway (`sandbox.recording.start()/stop()`, confirmed a genuine
+  `video/mp4` container via `downloadRecording()` in `src/lib/sandbox.ts`) — no ffmpeg, no Xvfb, no
+  screenshot polling.
+- Every `events.jsonl` line's `elapsedMs` is measured from the exact moment the recording actually
+  started (`recording.start()` resolving), not process start or prompt time — that's the number an
+  overlay tool should seek the video by. Each line is also written to disk immediately
+  (`appendFileSync`, not buffered), so a crash mid-run still leaves a usable partial log.
+- Every event's `sandbox.vncUrl` is stripped before logging — it embeds a live bearer token in its
+  query string (same rule as the rest of this doc: "contains the API key, so it is not printed by
+  default"), and this log gets uploaded to R2, so leaking it there would be worse than a console
+  print.
+- Artifacts always land locally first, at `/tmp/logs/runs/<runId>/` (`events.jsonl`, `meta.json`,
+  `video.<ext>`, extension from the real download content-type) — the R2 upload happens last and
+  only if all four `R2_*` vars are set; a failed/skipped upload never loses data, it's still on
+  disk.
+- If the sandbox rotates mid-run (its own idle timeout — unlikely, since the run keeps actively
+  driving it), the recording lives on the now-unreachable original sandbox and can't be
+  stopped/downloaded through the replacement; this is detected and reported (`meta.json`'s
+  `sandboxRotated: true`, a console warning), not silently swallowed, but the video itself is lost
+  in that case. The event log and metadata are still written and uploaded either way.
+- Verified end-to-end against a real sandbox, including the failure path: killed the Anthropic
+  call (no `ANTHROPIC_API_KEY`) mid-run and confirmed the recording was still stopped, downloaded
+  (a valid, playable `.mp4`), and all artifacts written with `status: "error"` and the underlying
+  message recorded.

@@ -30,6 +30,15 @@ export interface SandboxHandle {
    * too (see `setDisplayResolution` in sandbox.ts).
    */
   displayInfo(): Promise<{ width: number; height: number }>;
+  /** Screen recording, native to the gateway (matches `use-computer-sdk`'s `MacOSSandbox.recording`
+   * surface: `start()/stop()/listAll()/download()`). Only `start`/`stop` are declared here --
+   * `downloadRecording()` in sandbox.ts bypasses the SDK's own `recording.download()` the same way
+   * `takeScreenshot()` bypasses `screenshot.takeCompressed()`, to capture the response's
+   * content-type (which the SDK's `getBytes()` helper discards). */
+  recording: {
+    start(): Promise<string>;
+    stop(recordingId: string): Promise<{ recordingId: string; fileSize?: number }>;
+  };
   execSsh(command: string, timeoutMs?: number): Promise<ExecResult>;
   upload(data: Uint8Array, remotePath: string): Promise<void>;
   mouse: { click(x: number, y: number): Promise<void> };
@@ -144,6 +153,16 @@ export function attachSandbox(descriptor: SandboxDescriptor): SandboxHandle {
         headers: { "Content-Type": "application/octet-stream" },
         body: data as BodyInit,
       });
+    },
+    recording: {
+      async start() {
+        const d = await postJSON<{ recording_id?: string; id?: string }>("/recording/start");
+        return String(d.recording_id ?? d.id ?? "");
+      },
+      async stop(recordingId) {
+        const d = await postJSON<{ recording_id?: string; file_size?: number }>("/recording/stop", { recording_id: recordingId });
+        return { recordingId: String(d.recording_id ?? recordingId), fileSize: Number(d.file_size ?? 0) };
+      },
     },
     mouse: {
       click: (x, y) => postJSON("/mouse/click", { x, y, button: "left" }),

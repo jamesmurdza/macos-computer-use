@@ -8,6 +8,7 @@ function fakeHandle(sandboxId: string): SandboxHandle {
     host: "mm001",
     uiTree: async () => ({}),
     displayInfo: async () => ({ width: 1920, height: 1080 }),
+    recording: { start: async () => "rec-1", stop: async () => ({ recordingId: "rec-1", fileSize: 0 }) },
     execSsh: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
     upload: async () => {},
     mouse: { click: async () => {} },
