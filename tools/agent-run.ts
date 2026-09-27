@@ -54,7 +54,7 @@ if (existsSync(".env")) process.loadEnvFile(".env");
 const anthropicKey = process.env.AGENT_RUN_ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY;
 if (anthropicKey) process.env.ANTHROPIC_API_KEY = anthropicKey;
 
-const { streamAgent } = await import("../src/lib/agent.js");
+const { streamAgent, MAX_AGENT_STEPS } = await import("../src/lib/agent.js");
 const { createSandbox } = await import("../src/lib/sandbox-handle.js");
 const { downloadRecording, setDisplayResolution, takeScreenshot } = await import("../src/lib/sandbox.js");
 const { uploadRunArtifact, getRunArtifactUrl, publicRunArtifactUrl } = await import("../src/lib/storage.js");
@@ -91,6 +91,11 @@ const prompt = process.argv.slice(2).join(" ") || "use xcode to make and run a h
 // experimenting with cheaper/alternative models; see src/lib/llm.ts.
 const modelChoice = isModelSelector(process.env.MODEL) ? process.env.MODEL : DEFAULT_MODEL_CHOICE;
 const resolution = parseResolution(process.env.RESOLUTION);
+// Raise the step budget for a deliberately long, multi-app headless demo -- e.g.
+// MAX_STEPS=150 npx tsx tools/agent-run.ts "...". Only ever read here, not by the web app, so its
+// default (MAX_AGENT_STEPS) is unaffected regardless of what this script is asked to do.
+const maxSteps = process.env.MAX_STEPS ? Number(process.env.MAX_STEPS) : MAX_AGENT_STEPS;
+if (!Number.isInteger(maxSteps) || maxSteps < 1) throw new Error(`MAX_STEPS must be a positive integer, got "${process.env.MAX_STEPS}"`);
 
 const runId = randomUUID();
 const localDir = `/tmp/logs/runs/${runId}`;
@@ -116,7 +121,8 @@ function withoutVncUrl<T extends { sandbox: { sandboxId: string; host: string; v
 
 console.log(
   `RUN ${runId}\nPROMPT: ${prompt}\nMODEL:  ${modelChoice}` +
-    `${resolution ? `\nRESOLUTION: ${resolution.width}x${resolution.height}` : ""}\n${"-".repeat(70)}`,
+    `${resolution ? `\nRESOLUTION: ${resolution.width}x${resolution.height}` : ""}` +
+    `${maxSteps !== MAX_AGENT_STEPS ? `\nMAX_STEPS: ${maxSteps} (default ${MAX_AGENT_STEPS})` : ""}\n${"-".repeat(70)}`,
 );
 
 const sandbox = await createSandbox();
@@ -144,7 +150,7 @@ try {
   logEvent({ ts: videoStartedAt, elapsedMs: 0, type: "run-start", runId, prompt, modelChoice, sandboxId: sandbox.sandboxId, recordingId });
 
   const pending = new Map<string, { tool: string }>();
-  for await (const ev of streamAgent({ prompt, modelChoice, sandboxRef, history: [] })) {
+  for await (const ev of streamAgent({ prompt, modelChoice, sandboxRef, history: [], maxSteps })) {
     const now = Date.now();
     const elapsedMs = now - videoStartedAt;
     logEvent({ ts: now, elapsedMs, ...withoutVncUrl(ev) });
@@ -254,6 +260,7 @@ try {
     runId,
     prompt,
     modelChoice,
+    maxSteps,
     resolution,
     sandboxId: sandbox.sandboxId,
     recordingId,

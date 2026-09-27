@@ -134,13 +134,13 @@ export function buildSystemPrompt(now: Date = new Date()): string {
  * Opus request opts into Anthropic's server-side fallback routing (a decline is re-run on the
  * recommended fallback model within the same call) via the beta header and provider option.
  */
-function agentRequest(messages: ModelMessage[], modelChoice: ModelSelector, tools: ReturnType<typeof makeTools>) {
+export function agentRequest(messages: ModelMessage[], modelChoice: ModelSelector, tools: ReturnType<typeof makeTools>, maxSteps: number) {
   return {
     model: resolveLanguageModel(modelChoice),
     system: buildSystemPrompt(),
     messages,
     tools,
-    stopWhen: stepCountIs(MAX_AGENT_STEPS),
+    stopWhen: stepCountIs(maxSteps),
     ...(modelChoice === "opus"
       ? {
           headers: { "anthropic-beta": "server-side-fallback-2026-07-01" },
@@ -167,6 +167,10 @@ export interface AgentTurnInput {
   history: ModelMessage[];
   /** Aborts the model call (Stop button / client disconnect). */
   signal?: AbortSignal;
+  /** Overrides MAX_AGENT_STEPS for this turn only -- e.g. `tools/agent-run.ts` raising the budget
+   * for a deliberately long, multi-app headless demo. The web app never sets this, so its behavior
+   * is unchanged. */
+  maxSteps?: number;
 }
 
 /**
@@ -206,7 +210,7 @@ export type AgentEvent =
  * call with no result.
  */
 export async function* streamAgent(input: AgentTurnInput): AsyncGenerator<AgentEvent> {
-  const { prompt, modelChoice, sandboxRef, history, signal } = input;
+  const { prompt, modelChoice, sandboxRef, history, signal, maxSteps = MAX_AGENT_STEPS } = input;
   const messages: ModelMessage[] = [...history, { role: "user", content: prompt }];
   const tools = makeTools(sandboxRef);
   // Read fresh at each yield, not cached: this is what makes every event carry the *current*
@@ -218,7 +222,7 @@ export async function* streamAgent(input: AgentTurnInput): AsyncGenerator<AgentE
   let finalHistory = history;
   let usage: LanguageModelUsage | undefined;
   try {
-    const result = streamText({ ...agentRequest(messages, modelChoice, tools), abortSignal: signal });
+    const result = streamText({ ...agentRequest(messages, modelChoice, tools, maxSteps), abortSignal: signal });
     for await (const part of result.fullStream) {
       switch (part.type) {
         case "tool-call":
