@@ -79,6 +79,7 @@ function RunModal({ entry, onClose }: { entry: GalleryEntryResolved; onClose: ()
   const [speed, setSpeed] = useState(DEFAULT_SPEED);
   const [captions, setCaptions] = useState<CaptionEntry[]>([]);
   const [currentCaption, setCurrentCaption] = useState("");
+  const [exportState, setExportState] = useState<"idle" | "exporting" | "error">("idle");
   const videoRef = useRef<HTMLVideoElement>(null);
 
   // Applies on mount too (not just on change) so DEFAULT_SPEED actually takes effect -- the
@@ -103,6 +104,34 @@ function RunModal({ entry, onClose }: { entry: GalleryEntryResolved; onClose: ()
       cancelled = true;
     };
   }, [entry.runId]);
+
+  // Server-side burn-in (see api/export/[runId]/route.ts): the on-page overlay above is just a
+  // DOM element floating over the <video>, never part of the actual pixels, so downloading the
+  // R2 video directly would have no captions in it at all. This re-encodes with them burned in
+  // and hands back a normal mp4 download -- no polling for progress (ffmpeg doesn't report any
+  // partway through a single fetch), just an indeterminate spinner for however long the request
+  // takes.
+  async function handleExport() {
+    setExportState("exporting");
+    try {
+      const res = await fetch(`/api/export/${entry.runId}?videoKey=${encodeURIComponent(entry.videoKey)}`);
+      if (!res.ok) throw new Error(`export failed with status ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${entry.runId}-captioned.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setExportState("idle");
+    } catch (err) {
+      console.error("video export failed:", err);
+      setExportState("error");
+      setTimeout(() => setExportState("idle"), 3000);
+    }
+  }
 
   return (
     <div className="gallery-modal-overlay" onClick={onClose}>
@@ -135,6 +164,23 @@ function RunModal({ entry, onClose }: { entry: GalleryEntryResolved; onClose: ()
             )}
           </div>
           <div className="gallery-modal-controls">
+            <button
+              type="button"
+              className="gallery-export-button"
+              onClick={handleExport}
+              disabled={exportState === "exporting"}
+            >
+              {exportState === "exporting" ? (
+                <>
+                  <span className="gallery-spinner" aria-hidden="true" />
+                  Exporting…
+                </>
+              ) : exportState === "error" ? (
+                "Export failed — retry"
+              ) : (
+                "Download video"
+              )}
+            </button>
             <select
               className="gallery-speed-select"
               value={speed}

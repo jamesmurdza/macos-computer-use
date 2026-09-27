@@ -13,6 +13,14 @@ const nextConfig: NextConfig = {
   // Harmless in production (allowedDevOrigins is a dev-only check). Same fix as the main app's
   // next.config.ts.
   allowedDevOrigins: ["*.daytonaproxy01.net"],
+  // ffmpeg-static ships a prebuilt binary, not JS `require()`s of its own path -- Next's build-time
+  // file tracing (which decides what ships with each route's serverless function) can miss that,
+  // so name it explicitly. Same story for assets/fonts/*.ttf, which the export route's ffmpeg
+  // invocation reads straight off disk (fontsdir=) rather than importing.
+  serverExternalPackages: ["ffmpeg-static"],
+  outputFileTracingIncludes: {
+    "/api/export/*": ["./node_modules/ffmpeg-static/**/*", "./assets/fonts/**/*"],
+  },
 };
 
 export default nextConfig;
