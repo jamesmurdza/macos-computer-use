@@ -113,6 +113,19 @@ function resolveLanguageModel(selector: ModelSelector) {
 }
 
 /**
+ * `AGENT_SYSTEM_PROMPT` plus the actual current date/time, computed fresh per request rather than
+ * baked into the static prompt (which would go stale immediately). Added after a real run needed
+ * "today's date" for a task and had no way to get it: the menu bar clock visible in every
+ * screenshot shows the day of week and time but never the year, so the model fell back on its own
+ * training-data guess and wrote the wrong year into a document (2025, a full year off the sandbox's
+ * actual 2026) with no way to have known better from anything on screen. `now` is injectable for
+ * tests; defaults to the real current time.
+ */
+export function buildSystemPrompt(now: Date = new Date()): string {
+  return `${AGENT_SYSTEM_PROMPT}\n\nToday's date is ${now.toDateString()}, current time ${now.toTimeString().slice(0, 8)}. Use this for anything date/time-related (e.g. "today", "tomorrow", "this Saturday") instead of guessing -- what's on screen (like a menu-bar clock) often won't show the year.`;
+}
+
+/**
  * Shared request options for both the buffered (generateText) and streaming (streamText) paths.
  *
  * Opus's safety classifier declines "automate this Mac" prompts under the cyber category, so an
@@ -122,7 +135,7 @@ function resolveLanguageModel(selector: ModelSelector) {
 function agentRequest(messages: ModelMessage[], modelChoice: ModelSelector, tools: ReturnType<typeof makeTools>) {
   return {
     model: resolveLanguageModel(modelChoice),
-    system: AGENT_SYSTEM_PROMPT,
+    system: buildSystemPrompt(),
     messages,
     tools,
     stopWhen: stepCountIs(MAX_AGENT_STEPS),
