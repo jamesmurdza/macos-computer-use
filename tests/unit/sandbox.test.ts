@@ -744,6 +744,43 @@ describe("typeText", () => {
     expect(result.verified).toBe(false);
     expect(result.message).toContain("SHOULD_NOT_LAND_ANYWHERE");
   });
+
+  it("verifies a multi-line note even when the app reformats individual lines", async () => {
+    // Regression, from a real captured run: typed a title + 3 bulleted lines into Notes in one
+    // type_text call (the exact multi-line pattern this repo's own system prompt recommends).
+    // Notes exposed the real content via the node's raw `name` (not `value`) -- a first bug fixed
+    // by treeContainsText() reusing nodeLabel(). But even with that fix, an exact whole-block
+    // match still failed: Notes' auto-bulleted-list formatting silently dropped the leading "• "
+    // from the first bulleted line specifically (later lines in the same note kept theirs) and
+    // changed a typed straight apostrophe to a curly one -- both purely cosmetic, app-applied
+    // changes, not a sign the typing failed. This is why verification is line-by-line and
+    // normalized rather than one exact substring check.
+    const typed =
+      "Lake Tahoe Hike Ideas\n• Cave Rock – A popular hike.\n• Maggie's Peak – Great views.\n• Eagle Lake Trail – A scenic alpine lake.";
+    // Actual on-screen content, byte-for-byte as captured: no "• " before "Cave Rock", but "• "
+    // preserved before the later lines, and a curly apostrophe in "Maggie's".
+    const actualOnScreen =
+      "Lake Tahoe Hike Ideas\nCave Rock – A popular hike.\n• Maggie’s Peak – Great views.\n• Eagle Lake Trail – A scenic alpine lake.";
+    const raw = {
+      windows: [windowWith("Notes", [{ name: actualOnScreen, role: "AXTextArea", role_description: "text entry area", value: null, bbox: [0, 0, 400, 300] }])],
+    };
+    const { sandbox } = fakeTypeSandbox(raw);
+
+    const result = await typeText(sandbox, typed);
+
+    expect(result.status).toBe("ok");
+    expect(result.verified).toBeUndefined();
+  });
+
+  it("still flags a genuinely missing line even after normalization", async () => {
+    const raw = { windows: [windowWith("Notes", [{ name: "Lake Tahoe Hike Ideas\nCave Rock – A popular hike.", role: "AXTextArea", role_description: "text entry area", value: null, bbox: [0, 0, 400, 300] }])] };
+    const { sandbox } = fakeTypeSandbox(raw);
+
+    const result = await typeText(sandbox, "Lake Tahoe Hike Ideas\n• Cave Rock – A popular hike.\n• A line that never actually landed anywhere.");
+
+    expect(result.verified).toBe(false);
+    expect(result.message).toContain("never actually landed");
+  });
 });
 
 describe("screenshotUrl", () => {

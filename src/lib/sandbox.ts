@@ -797,16 +797,67 @@ export async function clickElement(sandbox: SandboxHandle, opts: UiClickOptions)
   return withScreen(sandbox, { status: "ok" });
 }
 
-/** Type text into whatever control currently has keyboard focus (click it first). */
-/** Whether any element's `value` anywhere in the tree contains `text` as a substring. Walks the
- * raw windows directly (not the pruned/clickable views) so this can't miss something those views
- * happen to filter out. */
-function treeContainsValue(raw: UiTreeResponse, text: string): boolean {
+/** Whether any element's displayed text content anywhere in the tree contains `text` as a
+ * substring. Walks the raw windows directly (not the pruned/clickable views, so this can't miss
+ * something those happen to filter out) but reuses `nodeLabel()` -- the same "what does this
+ * control actually show" logic the pruned summary itself is built from -- rather than reading
+ * `node.value` directly.
+ *
+ * That reuse matters: verified against a real sandbox that a naive `node.value`-only check
+ * produces a false negative for real, successfully-typed text. A raw dump of a real Notes editor
+ * after typing a multi-line note showed the actual content sitting in the node's raw `name` field
+ * (`{"role":"text entry area","name":"Lake Tahoe Hike Ideas\nCave Rock – ...", "value":null}`),
+ * not `value` -- the opposite of a PDF form's text fields, which carry their content in `value`
+ * with `name` left null. `nodeLabel()` already unifies exactly this kind of app-to-app difference
+ * (name-first, falling back to value for text-content roles); checking raw `value` alone missed
+ * an entire class of real, correctly-typed text and would have taught every future run to distrust
+ * a signal that was actually wrong about the failure, not the typing.
+ */
+function treeContainsText(raw: UiTreeResponse, text: string, transform: (s: string) => string = (s) => s): boolean {
   const walk = (node: UiElementNode): boolean => {
-    if (typeof node.value === "string" && node.value.includes(text)) return true;
+    const label = nodeLabel(node);
+    if (typeof label === "string" && transform(label).includes(text)) return true;
     return (node.children ?? []).some(walk);
   };
   return (raw.windows ?? []).some((w) => (w.children ?? []).some(walk));
+}
+
+/** Undoes the specific autocorrect-style substitutions macOS text controls are known to apply as
+ * you type (verified against a real sandbox, typing a real multi-line bulleted note into Notes):
+ * a straight `'`/`"` becomes a curly one, and a line starting with a bullet/list marker has that
+ * literal marker character stripped once the app's own auto-list formatting kicks in (observed:
+ * inconsistently -- the first bulleted line lost its "• ", later ones in the same note kept it).
+ * Comparing normalized-vs-normalized text means these cosmetic, app-applied changes don't look
+ * like "the text didn't land" when it plainly did. */
+function normalizeForVerification(line: string): string {
+  return line
+    .trim()
+    .replace(/^(?:[•\-*]|\d+[.)])\s+/, "")
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .toLowerCase();
+}
+
+/** Whether every non-empty line of `text` can be found somewhere in the tree, checked line by
+ * line (not as one contiguous block) and after `normalizeForVerification()`. Line-by-line,
+ * normalized comparison -- rather than one exact whole-block substring match -- is deliberate: a
+ * real multi-line type_text call (e.g. a title plus a bulleted list, exactly the pattern this
+ * codebase's own system prompt recommends for multi-line content) can have individual lines
+ * reformatted by the target app in ways that are cosmetic, not a sign anything failed. Requiring
+ * an exact match of the *entire* block would flag that as a miss; checking each line on its own
+ * terms doesn't. Returns the first line that couldn't be found anywhere (for the error message),
+ * or undefined if every line was found. */
+function findUnverifiedLine(raw: UiTreeResponse, text: string): string | undefined {
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (treeContainsText(raw, line)) continue;
+    // Normalize both sides identically -- comparing a normalized line against an un-normalized
+    // label (e.g. lowercased query vs. mixed-case label) would never match at all.
+    if (treeContainsText(raw, normalizeForVerification(line), normalizeForVerification)) continue;
+    return line;
+  }
+  return undefined;
 }
 
 /** Type text into whatever control currently has keyboard focus (click it first). Settles, then
@@ -822,11 +873,12 @@ export async function typeText(sandbox: SandboxHandle, text: string): Promise<Ui
   await sleep(600); // settle, matching withScreen()'s own post-"ok" delay
   const raw = (await sandbox.uiTree()) as UiTreeResponse;
   const screen = summarizeTree(raw);
-  if (treeContainsValue(raw, text)) return { status: "ok", screen };
+  const missingLine = findUnverifiedLine(raw, text);
+  if (!missingLine) return { status: "ok", screen };
   return {
     status: "ok",
     verified: false,
-    message: `typed "${text}" but it doesn't appear in any on-screen field's value -- it may not have landed where intended`,
+    message: `typed "${text}" but at least this part doesn't appear anywhere on screen: "${missingLine}" -- it may not have landed where intended`,
     screen,
   };
 }
