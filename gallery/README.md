@@ -8,7 +8,7 @@ loading that URL directly (a shared link, a refresh, a crawler) server-renders t
 that run's modal already open, including proper Open Graph/Twitter card metadata (title + thumbnail
 image) for link previews. The modal also overlays a synced caption bar (each `tool-call`'s
 `summary`, error messages, and the final reply, timed against `events.jsonl`'s `elapsedMs`), with a
-toggle switch to hide it.
+toggle switch to hide it and a playback speed selector (defaults to 2×).
 
 This is a **completely separate app** from the main project on purpose — no shared dependencies,
 no shared code, no shared credentials. It only ever does a plain public `fetch()` against a

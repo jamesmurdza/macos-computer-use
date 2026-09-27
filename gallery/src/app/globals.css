@@ -74,6 +74,14 @@ body { margin: 0; color: var(--ink); background: var(--bg); font: 14.5px/1.55 va
 .gallery-modal-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 6px 4px; }
 .gallery-modal-meta-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .gallery-modal-meta .gallery-desc { -webkit-line-clamp: unset; font-size: 14px; }
+.gallery-modal-controls { display: flex; align-items: center; gap: 16px; flex: none; }
+/* Same treatment as the main app's .model-select: strip browser chrome so it reads as plain text
+   with a value, not a boxed form control -- consistent with this app's overall minimalism. */
+.gallery-speed-select {
+  background: transparent; color: var(--ink-2); border: 0; padding: 0; margin: 0; font: inherit;
+  font-size: 12.5px; cursor: pointer; appearance: none; -webkit-appearance: none; -moz-appearance: none;
+}
+.gallery-speed-select:focus { outline: none; color: var(--ink); }
 .gallery-caption-toggle {
   display: inline-flex; align-items: center; gap: 8px; flex: none; cursor: pointer; user-select: none;
   font-size: 12.5px; color: var(--ink-2);

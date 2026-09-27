@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { GalleryEntryResolved } from "../lib/gallery";
 import { formatDate, formatDuration } from "../lib/gallery";
 import { captionAt, parseCaptions, type CaptionEntry } from "../lib/captions";
+
+const PLAYBACK_SPEEDS = [0.5, 1, 1.5, 2, 4];
+const DEFAULT_SPEED = 2;
 
 /**
  * Every run gets a real permalink at `/runs/<runId>` (see that route's page.tsx -- it renders this
@@ -72,8 +75,18 @@ export function GalleryGrid({ entries, initialRunId }: { entries: GalleryEntryRe
  * events.jsonl-driven caption overlay lives. */
 function RunModal({ entry, onClose }: { entry: GalleryEntryResolved; onClose: () => void }) {
   const [showCaptions, setShowCaptions] = useState(true);
+  const [speed, setSpeed] = useState(DEFAULT_SPEED);
   const [captions, setCaptions] = useState<CaptionEntry[]>([]);
   const [currentCaption, setCurrentCaption] = useState("");
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Applies on mount too (not just on change) so DEFAULT_SPEED actually takes effect -- the
+  // `defaultPlaybackRate` DOM property exists for this, but only takes effect before the media
+  // starts loading, which autoPlay races against; setting `playbackRate` directly here is what
+  // Chromium/Safari both actually honor once playback has begun.
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.playbackRate = speed;
+  }, [speed]);
 
   useEffect(() => {
     let cancelled = false;
@@ -98,6 +111,7 @@ function RunModal({ entry, onClose }: { entry: GalleryEntryResolved; onClose: ()
         </button>
         <div className="gallery-video-wrap">
           <video
+            ref={videoRef}
             src={entry.videoUrl}
             controls
             autoPlay
@@ -112,13 +126,27 @@ function RunModal({ entry, onClose }: { entry: GalleryEntryResolved; onClose: ()
               {formatDate(entry.date)} · {formatDuration(entry.durationMs)}
             </span>
           </div>
-          <label className="gallery-caption-toggle">
-            Captions
-            <input type="checkbox" checked={showCaptions} onChange={(ev) => setShowCaptions(ev.target.checked)} />
-            <span className="gallery-toggle-track">
-              <span className="gallery-toggle-thumb" />
-            </span>
-          </label>
+          <div className="gallery-modal-controls">
+            <select
+              className="gallery-speed-select"
+              value={speed}
+              onChange={(ev) => setSpeed(Number(ev.target.value))}
+              aria-label="Playback speed"
+            >
+              {PLAYBACK_SPEEDS.map((s) => (
+                <option key={s} value={s}>
+                  {s}×
+                </option>
+              ))}
+            </select>
+            <label className="gallery-caption-toggle">
+              Captions
+              <input type="checkbox" checked={showCaptions} onChange={(ev) => setShowCaptions(ev.target.checked)} />
+              <span className="gallery-toggle-track">
+                <span className="gallery-toggle-thumb" />
+              </span>
+            </label>
+          </div>
         </div>
       </div>
     </div>
