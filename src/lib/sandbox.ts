@@ -124,6 +124,9 @@ interface UiWindowNode {
   owner: string;
   role: string;
   is_on_screen?: boolean;
+  /** The window's own on-screen rectangle. Used to filter a deeply-nested web page's accessibility
+   * tree down to roughly what's actually visible right now -- see pruneElement()'s viewport param. */
+  bounds?: { x: number; y: number; width: number; height: number };
   children?: UiElementNode[];
 }
 
@@ -153,12 +156,88 @@ interface PrunedElement {
  */
 const SYSTEM_CHROME_OWNERS = new Set(["Notification Center", "Control Center", "Dock", "Window Server"]);
 
-/** role/label/children only — drops ids, geometry, and structural wrappers with nothing in them. */
-function pruneElement(node: UiElementNode, depth: number, maxDepth: number): PrunedElement | null {
-  const label = node.name || node.description || (typeof node.value === "string" ? node.value : undefined) || undefined;
+type Rect = { x: number; y: number; width: number; height: number };
+
+/** Whether a [x1,y1,x2,y2] box has positive area and overlaps `viewport` at all. `undefined` bbox
+ * (common for structural wrappers with no geometry of their own) is treated as "can't tell, don't
+ * filter it out" -- only a box that's actually somewhere else on screen gets excluded. */
+function intersectsViewport(bbox: number[] | undefined, viewport: Rect | undefined): boolean {
+  if (!viewport || !Array.isArray(bbox) || bbox.length !== 4) return true;
+  const [x1, y1, x2, y2] = bbox;
+  if (!(x2 > x1 && y2 > y1)) return false; // zero/negative area -- collapsed or hidden
+  return x1 < viewport.x + viewport.width && x2 > viewport.x && y1 < viewport.y + viewport.height && y2 > viewport.y;
+}
+
+/** Whether a [x1,y1,x2,y2] box sits entirely within `rect` (a few px of slop for rounding). Used
+ * only to sanity-check a window's own `bounds` against its direct children's *raw* geometry -- see
+ * reliableViewport()'s modal-sheet case, where a child can legitimately render outside the bounds
+ * its nominal parent window reports. */
+function isFullyContained(bbox: number[], rect: Rect, slop = 2): boolean {
+  const [x1, y1, x2, y2] = bbox;
+  return x1 >= rect.x - slop && y1 >= rect.y - slop && x2 <= rect.x + rect.width + slop && y2 <= rect.y + rect.height + slop;
+}
+
+/**
+ * A window's own `bounds` is usually a trustworthy viewport (verified against a real Safari
+ * window), but not always:
+ *
+ * - Finder's Desktop icon layer reports itself as a ~window~ whose `bounds` is a tiny sliver (e.g.
+ *   88x21 px, evidently some incidental UI detail's rect, not the desktop's own area) while its
+ *   actual child content spans the full screen -- verified against a real sandbox right after
+ *   creating a desktop folder. Filtering that child against the reported 88x21 rect would make the
+ *   new folder's own icon (and its in-progress rename field) vanish from the tree entirely, right
+ *   when the model most needs to see it.
+ * - A modal sheet (e.g. TextEdit's Save panel) is reported as nested *inside* its owning document
+ *   window's children, but can render wider than that window and centered differently -- verified
+ *   against a real sandbox: a Save sheet's own raw bbox was `[75, 145, 955, 593]` while the document
+ *   window underneath it claimed bounds of only `[213, 77, +603, +505]` (i.e. x 213-816). Filtering
+ *   the sheet's own children (its whole location sidebar -- Desktop, Documents, ...) against the
+ *   *document window's* bounds clipped out everything left of x=213, which silently deleted the
+ *   entire sidebar's labels from the tree (the one control needed to actually choose a save
+ *   location). Note this must be checked against the child's raw `bbox`, not `visible_bbox`: macOS
+ *   itself already clipped the sheet's own `visible_bbox` to match the window, which is exactly the
+ *   deceptive value that would hide this case if used here.
+ *
+ * Either way, skip filtering for that window rather than risk hiding real on-screen content because
+ * of one untrustworthy rectangle.
+ */
+function reliableViewport(w: UiWindowNode): Rect | undefined {
+  const b = w.bounds;
+  if (!b || b.width <= 0 || b.height <= 0) return undefined;
+  const windowArea = b.width * b.height;
+  if (windowArea < 10_000) return undefined; // smaller than ~100x100 -- not plausible as a real content viewport
+  for (const c of w.children ?? []) {
+    const rawBox = c.bbox;
+    if (Array.isArray(rawBox) && rawBox.length === 4 && !isFullyContained(rawBox, b)) {
+      return undefined; // a direct child (e.g. a modal sheet) isn't fully contained by its own window
+    }
+    const cb = c.visible_bbox ?? c.bbox;
+    if (!Array.isArray(cb) || cb.length !== 4) continue;
+    const childArea = Math.max(0, cb[2] - cb[0]) * Math.max(0, cb[3] - cb[1]);
+    if (childArea > windowArea * 4) return undefined; // a direct child far bigger than its own window
+  }
+  return b;
+}
+
+/**
+ * role/label/children only — drops ids, geometry, and structural wrappers with nothing in them.
+ *
+ * `viewport`, when given, additionally drops a node's *label* (treating it the same as having no
+ * label at all) if its own bbox is off-screen -- verified against a real, loaded Wikipedia page:
+ * without this, a rendered web page's actual paragraph text sits 15-18 levels deep in nested
+ * generic groups, so reaching it at all needs a much deeper walk than any native app dialog ever
+ * does, and a deep walk with no visibility filter blows the char budget on off-screen/scrolled-past
+ * content before ever reaching what's actually on screen (measured on that same page: only ~250 of
+ * ~7000 real-content nodes were actually within the window's bounds). Still recurses into an
+ * off-screen node's children regardless, since a container's own bbox being stale/off doesn't mean
+ * its children are.
+ */
+function pruneElement(node: UiElementNode, depth: number, maxDepth: number, viewport?: Rect): PrunedElement | null {
+  const visible = intersectsViewport(node.visible_bbox ?? node.bbox, viewport);
+  const label = visible ? nodeLabel(node) : undefined;
   const children =
     depth < maxDepth && Array.isArray(node.children)
-      ? node.children.map((c) => pruneElement(c, depth + 1, maxDepth)).filter((c): c is PrunedElement => c !== null)
+      ? node.children.map((c) => pruneElement(c, depth + 1, maxDepth, viewport)).filter((c): c is PrunedElement => c !== null)
       : [];
   if (!label && children.length === 0) return null;
   const pruned: PrunedElement = { role: node.role_description || node.role || "element" };
@@ -168,11 +247,68 @@ function pruneElement(node: UiElementNode, depth: number, maxDepth: number): Pru
   return pruned;
 }
 
+/**
+ * Puts any modal element (a "sheet", the role macOS gives a Save/Open panel or similar) first in
+ * a window's element list, ahead of the window's ordinary content.
+ *
+ * Regression, verified against a real sandbox and a real agent run: a Save sheet opened over a
+ * long, already-loaded document (an IRS PDF form, in this case) genuinely does appear in the raw
+ * tree as a normal sibling element -- but sitting *after* the document's own content in that
+ * array. summarizeTree()'s char cap (see maxChars below) then truncates the JSON before ever
+ * reaching it, so the model's read_accessibility_tree call came back with no trace of the sheet it
+ * had just opened -- not because anything failed to expose it, but because 24000 characters of the
+ * host document's own text came first and used up the entire budget. The agent then spent 30+
+ * steps hunting through menus for a dialog that was real and on screen the whole time, just
+ * invisible to it. A modal sheet is always exactly what a "what's on screen right now" read most
+ * needs to see, so it's worth guaranteeing it survives the cap regardless of how much ordinary
+ * content precedes it.
+ */
+function sortModalFirst(elements: PrunedElement[]): PrunedElement[] {
+  const isModal = (e: PrunedElement) => normRole(e.role).includes("sheet");
+  const modals = elements.filter(isModal);
+  if (!modals.length) return elements;
+  return [...modals, ...elements.filter((e) => !isModal(e))];
+}
+
 export interface UiSummaryOptions {
   /** Hard cap on the returned JSON string's length. A full tree can run to hundreds of KB. */
   maxChars?: number;
-  /** How many levels deep to walk each window's element tree. */
+  /** How many levels deep to walk each window's element tree. Deep by default (native app dialogs
+   * rarely nest past 6-8 levels, but a rendered web page's real text routinely sits 15-18 levels
+   * deep in nested generic groups -- verified against a real loaded Wikipedia page) since the
+   * viewport filter above is what actually keeps the output small, not this. */
   maxDepth?: number;
+}
+
+/**
+ * Cuts a JSON string down to (approximately) `maxChars`, without ever cutting in the middle of a
+ * string literal.
+ *
+ * Regression, verified against a real agent run: the naive version of this (a plain
+ * `json.slice(0, maxChars)` with a human-readable suffix glued directly onto it) routinely lands
+ * mid-string on a large document (a long IRS PDF form, in this case) -- producing something like
+ * `..."label":"Jordan Riv…(truncated, 23426 chars total)`, i.e. text that reads exactly like a
+ * real (very oddly-named) element label, glued right onto a real one with no separator. The model
+ * took that bait twice in the same run, calling click_element with the literal label
+ * `"(23426 chars total)"` -- the truncation marker itself, mistaken for something real on screen.
+ * Scanning for string boundaries (toggling on every unescaped `"`) and only cutting once we're
+ * back outside a string avoids ever producing that shape again; a newline before the marker also
+ * keeps it visually and structurally distinct from any preceding JSON value.
+ */
+function truncateJsonSafely(json: string, maxChars: number): string {
+  let inString = false;
+  let cut = maxChars;
+  for (let i = 0; i < maxChars; i++) {
+    if (json[i] === '"' && json[i - 1] !== "\\") inString = !inString;
+  }
+  if (inString) {
+    // Still inside a string at the cap -- extend forward to that string's closing quote (or to
+    // the end of the JSON, if the string itself is what's enormous) rather than slicing through it.
+    cut = json.indexOf('"', maxChars);
+    if (cut === -1) cut = json.length;
+    else cut += 1; // include the closing quote itself
+  }
+  return `${json.slice(0, cut)}\n…(truncated, ${json.length} chars total)`;
 }
 
 /**
@@ -183,8 +319,12 @@ export interface UiSummaryOptions {
  * "active but nothing to act on" state (e.g. an app still launching) is otherwise invisible.
  */
 function summarizeTree(raw: UiTreeResponse, opts: UiSummaryOptions = {}): string {
-  const maxChars = opts.maxChars ?? 7000;
-  const maxDepth = opts.maxDepth ?? 6;
+  // 7000 was sized for compact native-app dialogs; a real, fully-loaded web page's single viewport
+  // -- verified against a live Wikipedia page, post-viewport-filtering -- still runs to ~20000
+  // chars once real article content is included, so this needs real headroom above that or every
+  // web-reading task truncates before reaching the text it was asked to read.
+  const maxChars = opts.maxChars ?? 24000;
+  const maxDepth = opts.maxDepth ?? 24;
 
   const apps = (raw.applications ?? [])
     .filter((a) => a.info.active || a.windows.length > 0)
@@ -195,14 +335,34 @@ function summarizeTree(raw: UiTreeResponse, opts: UiSummaryOptions = {}): string
 
   // Every on-screen window that isn't OS chrome — dialogs and sheets included, and blank/not-yet-
   // rendered windows too (an empty window of the frontmost app is itself a useful signal).
+  const activeApp = (raw.applications ?? []).find((a) => a.info.active)?.info.name;
   const windows = (raw.windows ?? [])
     .filter((w) => w.is_on_screen && !SYSTEM_CHROME_OWNERS.has(w.owner))
     .map((w) => ({
       app: w.owner,
       role: w.role,
       title: w.name || undefined,
-      elements: (w.children ?? []).map((c) => pruneElement(c, 0, maxDepth)).filter((c): c is PrunedElement => c !== null),
-    }));
+      elements: sortModalFirst(
+        (w.children ?? []).map((c) => pruneElement(c, 0, maxDepth, reliableViewport(w))).filter((c): c is PrunedElement => c !== null),
+      ),
+    }))
+    // A second, window-level instance of the same problem sortModalFirst solves at the element
+    // level: verified against a real sandbox that Preview's own "Open" file dialog (a genuine,
+    // separate top-level window, 36KB of real content -- the filename list, Documents sidebar,
+    // Open/Cancel buttons) sat right after Safari's window for the same huge IRS PDF (282KB raw)
+    // in the gateway's own array order. The char cap truncated the combined JSON deep inside
+    // Safari's content, long before ever reaching Preview's dialog -- cmd+o had genuinely worked,
+    // but neither the agent nor this code could see it, and repeated retries kept "failing" the
+    // exact same way. The active/frontmost app's own window is the one most likely to be what a
+    // "what's on screen" read actually needs, so it goes first; everything else sorts by ascending
+    // serialized size, so small, information-dense windows (dialogs, alerts) outlast large,
+    // mostly-irrelevant background ones when the cap does have to cut something.
+    .sort((a, b) => {
+      const aActive = a.app === activeApp ? 0 : 1;
+      const bActive = b.app === activeApp ? 0 : 1;
+      if (aActive !== bActive) return aActive - bActive;
+      return JSON.stringify(a.elements).length - JSON.stringify(b.elements).length;
+    });
 
   const shownOwners = new Set(windows.map((w) => w.app));
   const noWindow = (raw.applications ?? [])
@@ -213,11 +373,8 @@ function summarizeTree(raw: UiTreeResponse, opts: UiSummaryOptions = {}): string
     : undefined;
 
   // note first so this key diagnostic survives the char cap even when windows is large.
-  let json = JSON.stringify({ note, apps, menus, windows });
-  if (json.length > maxChars) {
-    json = `${json.slice(0, maxChars)}…(truncated, ${json.length} chars total)`;
-  }
-  return json;
+  const json = JSON.stringify({ note, apps, menus, windows });
+  return json.length > maxChars ? truncateJsonSafely(json, maxChars) : json;
 }
 
 /**
@@ -248,9 +405,24 @@ function appHasWindow(raw: UiTreeResponse, app: string): boolean {
  * a delay" pattern: if the app never shows a usable window within the timeout, the returned
  * summary's `note` says it's frontmost with nothing on screen (and any blank window or blocking
  * dialog appears in `windows`), so the caller can react instead of acting on nothing.
+ *
+ * `activate`'s own exit code is checked first and surfaced as a `note` too, distinctly from a slow
+ * launch: verified against a real sandbox that `tell application "iOS Simulator" to activate` (a
+ * name a model can very plausibly guess -- the actual app is just called "Simulator") fails
+ * immediately with a real AppleScript error ("Can't get application ‘iOS Simulator’"), which this
+ * function used to silently swallow and then poll for a window that could never appear -- making a
+ * flat-out wrong app name look identical to one that's just slow to launch, until the timeout
+ * expired with no explanation either way.
  */
 export async function openApp(sandbox: SandboxHandle, app: string, timeoutSeconds = 15): Promise<string> {
-  await runAppleScript(sandbox, `tell application "${escapeAppleScript(app)}" to activate`);
+  const activation = await runAppleScript(sandbox, `tell application "${escapeAppleScript(app)}" to activate`);
+  if (activation.exitCode !== 0) {
+    const detail = (activation.stderr || activation.stdout).trim() || `exit code ${activation.exitCode}`;
+    const parsed = JSON.parse(summarizeTree((await sandbox.uiTree()) as UiTreeResponse)) as { note?: string };
+    const activationNote = `"${app}" could not be activated (this is not just a slow launch) -- macOS reported: ${detail}. Double-check the exact app name and try again.`;
+    parsed.note = parsed.note ? `${activationNote} ${parsed.note}` : activationNote;
+    return JSON.stringify(parsed);
+  }
   const deadline = Date.now() + timeoutSeconds * 1000;
   let raw = (await sandbox.uiTree()) as UiTreeResponse;
   while (!appHasWindow(raw, app) && Date.now() < deadline) {
@@ -298,6 +470,11 @@ interface FoundElement {
   label: string;
   cx: number;
   cy: number;
+  /** The owning window's app (raw `owner`, e.g. "Preview"), so clickElement() can tell whether
+   * this element's window is actually the frontmost one before clicking it -- see the comment on
+   * that reactivation logic for why this matters. undefined for menu-bar items (always belong to
+   * whichever app is already frontmost, so never need this). */
+  app?: string;
 }
 
 /** Attach the current on-screen summary to an action result; settle first if the action changed
@@ -320,31 +497,78 @@ function nodeCenter(node: UiElementNode): { cx: number; cy: number } | null {
   return { cx: (x1 + x2) / 2, cy: (y1 + y2) / 2 };
 }
 
-function nodeLabel(node: UiElementNode): string | undefined {
-  return node.name || node.description || (typeof node.value === "string" ? node.value : undefined) || undefined;
-}
-
 /** Normalize a role for tolerant matching: lowercase, drop spaces and a leading "AX". */
 function normRole(s: string): string {
   return s.toLowerCase().replace(/\s+/g, "").replace(/^ax/, "");
+}
+
+/** "AXTextArea" -> "text area", "AXStaticText" -> "static text". */
+function humanizeRole(role: string): string {
+  return role
+    .replace(/^AX/, "")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .toLowerCase();
+}
+
+/**
+ * Roles worth surfacing (and clicking into) even with no text yet -- an empty input's accessible
+ * name/value is normally blank until something is typed, which would otherwise make it vanish
+ * entirely from both the tree summary and collectClickable() below (both require a label). Verified
+ * against a real sandbox: a brand-new, empty Notes document's whole editor is exactly this -- an
+ * `AXTextArea` with no name, description, or value at all -- so without this fallback there is
+ * *no way* to ever see or click into it once it's empty.
+ */
+const EMPTY_LABELABLE_ROLE_HINTS = ["textarea", "textfield", "textentryarea", "searchfield", "combobox"];
+
+/** How much of a text-content role's `value` to keep (see `nodeLabel` below). Kept generous --
+ * this is the only way to ever read Terminal's scrollback or a long document's body -- but capped
+ * so one huge terminal session or document doesn't blow the whole tree summary's char budget.
+ * When cut, keeps the *end* of the string: for a scrolling log/shell, the most recent lines (what
+ * a "what happened" question is almost always about) are always last, not first. */
+const MAX_TEXT_VALUE_CHARS = 4000;
+
+/** Real name first, then (for a text-content role -- see EMPTY_LABELABLE_ROLE_HINTS) its `value`,
+ * then description, then value again for every other role; for an otherwise-unlabeled input-shaped
+ * control, a synthetic "(empty text area)"-style placeholder instead of nothing, so it stays
+ * visible and clickable by that exact string. Shared by pruneElement() (what the model reads) and
+ * collectClickable() (what click_element can target), so a label the model sees in the tree is
+ * always one it can click.
+ *
+ * value is checked *before* description for text-content roles specifically because of a real,
+ * verified case: Terminal.app's own text area reports `description: "shell"` (a static, useless
+ * accessibility hint, always exactly that word) while `value` holds the actual scrollback text --
+ * with the old `name || description || value` order, "shell" always won and the real output was
+ * silently unreachable no matter what command ran. Roles where `description` is itself the useful
+ * bit (most non-text-content controls) are unaffected, since this branch only fires for roles
+ * matching EMPTY_LABELABLE_ROLE_HINTS in the first place.
+ */
+function nodeLabel(node: UiElementNode): string | undefined {
+  const role = node.role_description || node.role;
+  const isTextContentRole = !!role && EMPTY_LABELABLE_ROLE_HINTS.some((k) => normRole(role).includes(k));
+  const rawValue = typeof node.value === "string" && node.value ? node.value : undefined;
+  const value = rawValue && rawValue.length > MAX_TEXT_VALUE_CHARS ? `…(truncated)${rawValue.slice(-MAX_TEXT_VALUE_CHARS)}` : rawValue;
+  const real = node.name || (isTextContentRole ? value : undefined) || node.description || value || undefined;
+  if (real) return real;
+  if (!role) return undefined;
+  return isTextContentRole ? `(empty ${humanizeRole(role)})` : undefined;
 }
 
 /** Every clickable, labeled element currently on screen, with the point to click. */
 function collectClickable(raw: UiTreeResponse, app?: string): FoundElement[] {
   const out: FoundElement[] = [];
   const appLc = app?.toLowerCase();
-  const walk = (node: UiElementNode) => {
+  const walk = (node: UiElementNode, owner: string) => {
     const label = nodeLabel(node);
     const center = nodeCenter(node);
     if (label && center) {
-      out.push({ role: node.role_description || node.role || "element", label: String(label), ...center });
+      out.push({ role: node.role_description || node.role || "element", label: String(label), app: owner, ...center });
     }
-    for (const child of node.children ?? []) walk(child);
+    for (const child of node.children ?? []) walk(child, owner);
   };
   for (const w of raw.windows ?? []) {
     if (!w.is_on_screen || SYSTEM_CHROME_OWNERS.has(w.owner)) continue;
     if (appLc && !(w.owner ?? "").toLowerCase().includes(appLc)) continue;
-    for (const child of w.children ?? []) walk(child);
+    for (const child of w.children ?? []) walk(child, w.owner);
   }
   // Menu-bar menus (File, Edit, Product, …) — click one to open it, then the tree shows its items.
   for (const m of raw.menubar_items ?? []) {
@@ -356,17 +580,57 @@ function collectClickable(raw: UiTreeResponse, app?: string): FoundElement[] {
   return out;
 }
 
+/**
+ * Roles considered actually clickable/actionable in the sense a caller means when they say "click
+ * X" without specifying a role -- as opposed to a plain, inert text label. Used only to break ties
+ * in clickElement() when the label alone is ambiguous.
+ */
+const INTERACTIVE_ROLE_HINTS = [
+  "button",
+  "menuitem",
+  "menubaritem",
+  "checkbox",
+  "radiobutton",
+  "tab",
+  "link",
+  "cell",
+  "row",
+  "popupbutton",
+  "textfield",
+  "textentryarea",
+  "textarea",
+  "combobox",
+];
+
+/** 2 = an interactive control, 1 = anything else, 0 = plain inert text. Higher wins a tie when
+ * clickElement() has multiple same-label matches and no explicit role/index to disambiguate. */
+function interactionRank(role: string): number {
+  const r = normRole(role);
+  if (r === "text" || r === "statictext") return 0;
+  return INTERACTIVE_ROLE_HINTS.some((k) => r.includes(k)) ? 2 : 1;
+}
+
 function matchElements(all: FoundElement[], role: string | undefined, label: string): FoundElement[] {
   const wantRole = role ? normRole(role) : "";
-  const roleOk = (e: FoundElement) => {
+  const labelLc = label.toLowerCase();
+  const roleMatches = (e: FoundElement, exact: boolean): boolean => {
     if (!wantRole) return true;
     const r = normRole(e.role);
-    return r.includes(wantRole) || wantRole.includes(r);
+    return exact ? r === wantRole : r.includes(wantRole) || wantRole.includes(r);
   };
-  const labelLc = label.toLowerCase();
-  const exact = all.filter((e) => roleOk(e) && e.label.toLowerCase() === labelLc);
-  if (exact.length) return exact;
-  return all.filter((e) => roleOk(e) && e.label.toLowerCase().includes(labelLc));
+
+  for (const labelExact of [true, false]) {
+    const byLabel = all.filter((e) => (labelExact ? e.label.toLowerCase() === labelLc : e.label.toLowerCase().includes(labelLc)));
+    if (!byLabel.length) continue;
+    // An exact role match always wins over a loose substring one within this label tier -- e.g. an
+    // explicit role: "text entry area" must not be diluted by plain "text" nodes just because
+    // "text" happens to be a substring of the normalized role name "textentryarea".
+    const exactRole = byLabel.filter((e) => roleMatches(e, true));
+    if (exactRole.length) return exactRole;
+    const looseRole = byLabel.filter((e) => roleMatches(e, false));
+    if (looseRole.length) return looseRole;
+  }
+  return [];
 }
 
 /**
@@ -379,14 +643,26 @@ function matchElements(all: FoundElement[], role: string | undefined, label: str
 export async function clickElement(sandbox: SandboxHandle, opts: UiClickOptions): Promise<UiActionResult> {
   const deadline = Date.now() + (opts.timeoutSeconds ?? 5) * 1000;
   let matches: FoundElement[] = [];
+  let raw: UiTreeResponse = {};
   for (;;) {
-    const raw = (await sandbox.uiTree()) as UiTreeResponse;
+    raw = (await sandbox.uiTree()) as UiTreeResponse;
     matches = matchElements(collectClickable(raw, opts.app), opts.role, opts.label);
     if (matches.length > 0 || Date.now() >= deadline) break;
     await sleep(500);
   }
   if (matches.length === 0) {
     return withScreen(sandbox, { status: "not-found", message: `no on-screen element matching label "${opts.label}"${opts.role ? ` (role "${opts.role}")` : ""}` });
+  }
+  // Silently break the single most common tie before it ever reaches the model: an AppKit
+  // button/cell/row and its own nested text label routinely expose the exact same accessible name
+  // (e.g. a sidebar's "New Note" row is both a clickable cell *and* a plain text child both named
+  // "New Note"). When narrowing to the highest interaction rank leaves exactly one candidate, use
+  // it directly instead of forcing a round trip to ask which one was meant. A genuine tie at the
+  // same rank (e.g. two buttons sharing a label) still falls through to "ambiguous" below, and this
+  // narrowing happens before `index` is resolved so a retry's index lines up with what was reported.
+  if (matches.length > 1) {
+    const maxRank = Math.max(...matches.map((m) => interactionRank(m.role)));
+    matches = matches.filter((m) => interactionRank(m.role) === maxRank);
   }
   let target: FoundElement;
   if (opts.index && opts.index > 0) {
@@ -400,6 +676,23 @@ export async function clickElement(sandbox: SandboxHandle, opts: UiClickOptions)
       message: `${matches.length} elements match — retry with a more specific label/role, or call again with "index" to pick one`,
       candidates: matches.slice(0, 10).map((m, i) => `${i + 1}) ${m.role} "${m.label}"`),
     });
+  }
+  // If the target's own app isn't the frontmost one, activate it first -- verified against a real
+  // sandbox and a real agent run that this matters, not just a defensive guess: once some other
+  // app becomes frontmost (e.g. the caller switched away and back while a file dialog from a
+  // different app was still open), a raw coordinate click into the now-background window's
+  // controls is accepted by the OS as "bring this window forward" only -- it does *not* also
+  // perform the click's actual action, even though it's dispatched at the exact right pixel and
+  // this function has no way to tell the difference (the click call itself never errors). Silently
+  // reproduced: clicking a file in a Preview Open dialog, then its Open button, immediately after
+  // switching focus to Safari -- both clicks "succeeded" yet the file never actually opened, and
+  // nothing in the response said why. Re-activating first (a real agent run doing this on purpose
+  // -- deliberately opening a dialog, switching apps, switching back -- would trigger this
+  // automatically) makes clicking robust regardless of what else the caller did in between.
+  const activeApp = (raw.applications ?? []).find((a) => a.info.active)?.info.name;
+  if (target.app && activeApp && target.app !== activeApp) {
+    await runAppleScript(sandbox, `tell application "${escapeAppleScript(target.app)}" to activate`);
+    await sleep(400);
   }
   await sandbox.mouse.click(Math.round(target.cx), Math.round(target.cy));
   return withScreen(sandbox, { status: "ok" });

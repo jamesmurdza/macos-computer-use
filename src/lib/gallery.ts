@@ -40,6 +40,11 @@ export interface GalleryEntry {
   /** Estimated USD cost against current list price -- see src/lib/cost.ts's own caveats
    * (undefined, not 0, when pricing couldn't be determined). */
   costUsd?: number;
+  /** "ok" (finished normally) or "error" (crashed, or killed -- e.g. SIGTERM after being judged
+   * unproductive; still has a real, playable recording up to that point). Every run with a video
+   * is listed regardless of this -- an incomplete run is still real output worth being able to
+   * watch -- so the reader uses this only to show a badge, never to filter. */
+  status: "ok" | "error";
 }
 
 /** The subset of tools/agent-run.ts's meta.json this cares about. */
@@ -77,7 +82,12 @@ async function writeIndex(entries: GalleryEntry[]): Promise<void> {
 }
 
 function metaToEntry(runId: string, meta: RunMeta): GalleryEntry | undefined {
-  if (meta.status !== "ok" || !meta.videoFile || !meta.videoStartedAt || !meta.videoEndedAt) return undefined;
+  // A video is the one hard requirement -- there's nothing to show without it. status is *not*
+  // filtered on: a run that errored or got killed mid-task still has a real recording of whatever
+  // it actually did, and that's the user's output to see, not something for this tool to hide on
+  // its own judgment (see CLAUDE.md's "never delete/withhold a run without being asked" rule --
+  // the same principle applies to keeping it out of the gallery).
+  if (!meta.videoFile || !meta.videoStartedAt || !meta.videoEndedAt) return undefined;
   return {
     runId,
     description: meta.prompt?.trim() || "(no description)",
@@ -89,6 +99,7 @@ function metaToEntry(runId: string, meta: RunMeta): GalleryEntry | undefined {
     inputTokens: meta.inputTokens,
     outputTokens: meta.outputTokens,
     costUsd: meta.costUsd,
+    status: meta.status,
   };
 }
 
@@ -98,9 +109,9 @@ function metaToEntry(runId: string, meta: RunMeta): GalleryEntry | undefined {
  * or appends a new one, and writes the whole array back -- two R2 calls total, regardless of how
  * many runs have ever happened, instead of `rebuildGalleryIndex()`'s O(n) full-bucket rescan.
  *
- * Does nothing (returns the unchanged index) if `meta` doesn't describe a displayable run (failed,
- * or missing a video) -- a failed run isn't something worth showing in a gallery of "what the
- * agent did".
+ * Does nothing (returns the unchanged index) only if `meta` is missing a real video -- there's
+ * nothing to play in that case. A failed or killed run with a real recording is still included
+ * (flagged via `status`, never hidden); see metaToEntry().
  *
  * Trade-off, worth remembering: this is a read-modify-write against one shared object, so two
  * `agent-run.ts` processes finishing at the exact same moment could race and one entry could be

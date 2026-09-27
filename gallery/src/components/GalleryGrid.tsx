@@ -57,6 +57,7 @@ export function GalleryGrid({ entries, initialRunId }: { entries: GalleryEntryRe
               {/* Plain <img>, not next/image: external R2 URLs, no image-domain config needed for a personal tool */}
               <img src={e.thumbnailUrl} alt="" loading="lazy" onError={(ev) => (ev.currentTarget.style.visibility = "hidden")} />
               <span className="gallery-duration">{formatDuration(e.durationMs)}</span>
+              {e.status === "error" && <span className="gallery-badge-incomplete">Incomplete</span>}
             </span>
             <span className="gallery-meta">
               <span className="gallery-desc">{e.description}</span>
@@ -129,6 +130,7 @@ function RunModal({ entry, onClose }: { entry: GalleryEntryResolved; onClose: ()
               <span className="gallery-run-meta">
                 {entry.model}
                 {entry.costUsd !== undefined && <> · ~{formatCost(entry.costUsd)}</>}
+                {entry.status === "error" && <> · <span className="gallery-badge-incomplete-inline">didn't finish</span></>}
               </span>
             )}
           </div>

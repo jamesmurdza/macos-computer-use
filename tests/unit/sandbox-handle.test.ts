@@ -23,6 +23,10 @@ describe("isGone", () => {
     expect(isGone(new Error("410 /v1/sandboxes/sb-1/screenshot: gone"))).toBe(true);
   });
 
+  it("is true for a 502 -- a real sandbox's VM can stop answering commands entirely without ever recovering", () => {
+    expect(isGone(new Error('502 /v1/sandboxes/sb-1/display/windows: {"error":"VM command failed"}'))).toBe(true);
+  });
+
   it("is false for other errors and non-errors", () => {
     expect(isGone(new Error("500 /v1/sandboxes/sb-1/exec: boom"))).toBe(false);
     expect(isGone(new Error("sandbox 404 mentioned later"))).toBe(false);

@@ -22,3 +22,13 @@ This does **not** apply to my own throwaway investigation scaffolding from the s
 turn/session -- test scripts I wrote to a probe/`tools/_*.mjs` file, scratch objects I uploaded to
 verify something (e.g. `probe/*.txt`), local `.next` build caches, or orphaned dev-server
 processes I started. Those are mine to clean up freely; they were never the user's deliverable.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

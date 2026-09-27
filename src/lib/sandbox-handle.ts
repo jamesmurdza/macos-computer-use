@@ -57,9 +57,18 @@ export interface SandboxDescriptor {
   vncUrl: string;
 }
 
-/** The SDK reports a reaped or deleted sandbox as an Error whose message starts with the HTTP status. */
+/**
+ * The SDK reports a reaped or deleted sandbox as an Error whose message starts with the HTTP
+ * status: 404/410 mean the sandbox record itself no longer exists. 502 ("VM command failed") is
+ * different but ends up needing the same response -- verified against a real stress-testing run
+ * where a sandbox's own VM stopped answering commands entirely and every single call for 80+
+ * seconds (9+ consecutive tool calls) came back with the identical 502, never recovering on its
+ * own. A sandbox in that state can't run anything no matter how long the model retries against it,
+ * so it gets the same "gone, get a fresh one" treatment as a real 404/410 rather than being
+ * indistinguishable from a one-off transient error the caller should just retry.
+ */
 export function isGone(err: unknown): boolean {
-  return err instanceof Error && /^(404|410) /.test(err.message);
+  return err instanceof Error && /^(404|410|502) /.test(err.message);
 }
 
 const DEFAULT_BASE_URL = "https://api.use.computer";
