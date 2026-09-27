@@ -122,10 +122,14 @@ log + a metadata file to Cloudflare R2 — so a later tool can overlay the log o
 ```
 npx tsx tools/agent-run.ts "use xcode to make and run a hello world script"
 MODEL=sonnet npx tsx tools/agent-run.ts "open safari and go to example.com"
-RESOLUTION=1280x720 npx tsx tools/agent-run.ts "..."   # shrink the recorded video, see above
+RESOLUTION=1280x720 npx tsx tools/agent-run.ts "..."   # override the default resolution
+RESOLUTION=native npx tsx tools/agent-run.ts "..."     # keep the sandbox's native 1920x1080
 AGENT_RUN_ANTHROPIC_API_KEY=sk-ant-... npx tsx tools/agent-run.ts "..."   # kept out of the web app
 ```
 
+- Shrinks the sandbox to `DEFAULT_RESOLUTION` (1280x960 -- see "Display
+  resolution" above) before starting the recording, unless `RESOLUTION` overrides it (a `WxH` value,
+  or `native` to skip resizing and keep the sandbox at its native 1920x1080).
 - Recording is native to the gateway (`sandbox.recording.start()/stop()`, confirmed a genuine
   `video/mp4` container via `downloadRecording()` in `src/lib/sandbox.ts`) — no ffmpeg, no Xvfb, no
   screenshot polling.

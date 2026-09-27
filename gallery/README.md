@@ -2,12 +2,26 @@
 
 A minimal, standalone gallery of recorded [macos-computer-use](../README.md) agent runs: a grid of
 thumbnails with a short description, date, and YouTube-style duration badge; click one to play the
-recording.
+recording. Every run also has a real permalink at `/runs/<runId>` -- clicking a card updates the
+URL to it without a full page reload (`history.pushState`, handled in `GalleryGrid.tsx`), and
+loading that URL directly (a shared link, a refresh, a crawler) server-renders the same grid with
+that run's modal already open, including proper Open Graph/Twitter card metadata (title + thumbnail
+image) for link previews. The modal also overlays a synced caption bar (each `tool-call`'s
+`summary`, error messages, and the final reply, timed against `events.jsonl`'s `elapsedMs`), with a
+toggle switch to hide it and a playback speed selector (defaults to 2×).
 
 This is a **completely separate app** from the main project on purpose — no shared dependencies,
 no shared code, no shared credentials. It only ever does a plain public `fetch()` against a
-Cloudflare R2 bucket's public URL. The two apps are meant to be deployed as two separate Vercel
-projects (or not deployed together at all).
+Cloudflare R2 bucket's public URL for the video/thumbnail. The two apps are meant to be deployed as
+two separate Vercel projects (or not deployed together at all).
+
+One exception: `events.jsonl` (for the caption overlay) is fetched through this app's own
+`/api/events/[runId]` route rather than directly from R2's public URL client-side, because R2's
+public bucket domain sends no CORS headers at all -- verified directly (`curl -I` with an `Origin`
+header showed no `Access-Control-Allow-Origin`) -- so a browser `fetch()` straight to it would be
+blocked, unlike `<video src>`/`<img src>`, which don't need CORS just to display. The API route
+re-fetches the same public URL server-side (no credentials involved) and relays it, which isn't
+subject to CORS since it's not a browser-initiated cross-origin request.
 
 ## How it connects to the main app
 

@@ -59,8 +59,44 @@ body { margin: 0; color: var(--ink); background: var(--bg); font: 14.5px/1.55 va
   box-shadow: 0 30px 60px -20px rgba(0, 0, 0, .4);
 }
 .gallery-modal video { display: block; width: 100%; border-radius: 10px; background: #000; }
-.gallery-modal-meta { display: flex; flex-direction: column; gap: 4px; padding: 14px 6px 4px; }
+.gallery-video-wrap { position: relative; }
+/* bottom, clear of native <video controls>' scrubber/play bar (~40px tall in Chromium/Safari) --
+   sits just above it rather than overlapping. Same visual language as .gallery-duration/.chip
+   elsewhere -- a translucent dark pill over the video. */
+.gallery-caption {
+  /* max-width leaves clearance on both sides -- checked against the longest realistic caption (a
+     full run-end reply, ~160 chars). */
+  position: absolute; bottom: 48px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 32px);
+  background: rgba(10, 9, 8, .72); backdrop-filter: blur(6px); color: #ece6da;
+  border: 1px solid rgba(255, 255, 255, .1); border-radius: 10px; padding: 7px 12px;
+  font-family: var(--sans); font-size: 13px; line-height: 1.4; text-align: center;
+}
+.gallery-modal-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 6px 4px; }
+.gallery-modal-meta-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .gallery-modal-meta .gallery-desc { -webkit-line-clamp: unset; font-size: 14px; }
+.gallery-modal-controls { display: flex; align-items: center; gap: 16px; flex: none; }
+/* Same treatment as the main app's .model-select: strip browser chrome so it reads as plain text
+   with a value, not a boxed form control -- consistent with this app's overall minimalism. */
+.gallery-speed-select {
+  background: transparent; color: var(--ink-2); border: 0; padding: 0; margin: 0; font: inherit;
+  font-size: 12.5px; cursor: pointer; appearance: none; -webkit-appearance: none; -moz-appearance: none;
+}
+.gallery-speed-select:focus { outline: none; color: var(--ink); }
+.gallery-caption-toggle {
+  display: inline-flex; align-items: center; gap: 8px; flex: none; cursor: pointer; user-select: none;
+  font-size: 12.5px; color: var(--ink-2);
+}
+.gallery-caption-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.gallery-toggle-track {
+  position: relative; width: 32px; height: 19px; border-radius: 10px; background: var(--line-2);
+  transition: background .15s; flex: none;
+}
+.gallery-toggle-thumb {
+  position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .3); transition: transform .15s;
+}
+.gallery-caption-toggle input:checked + .gallery-toggle-track { background: var(--ink); }
+.gallery-caption-toggle input:checked + .gallery-toggle-track .gallery-toggle-thumb { transform: translateX(13px); }
 /* Sits over the video's top-right corner, not outside the modal box: .gallery-modal has
    `overflow: auto`, which clips any absolutely-positioned child sitting outside its bounds. */
 .gallery-modal-close {
