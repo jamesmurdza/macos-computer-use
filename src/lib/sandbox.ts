@@ -247,6 +247,29 @@ function pruneElement(node: UiElementNode, depth: number, maxDepth: number, view
   return pruned;
 }
 
+/**
+ * Puts any modal element (a "sheet", the role macOS gives a Save/Open panel or similar) first in
+ * a window's element list, ahead of the window's ordinary content.
+ *
+ * Regression, verified against a real sandbox and a real agent run: a Save sheet opened over a
+ * long, already-loaded document (an IRS PDF form, in this case) genuinely does appear in the raw
+ * tree as a normal sibling element -- but sitting *after* the document's own content in that
+ * array. summarizeTree()'s char cap (see maxChars below) then truncates the JSON before ever
+ * reaching it, so the model's read_accessibility_tree call came back with no trace of the sheet it
+ * had just opened -- not because anything failed to expose it, but because 24000 characters of the
+ * host document's own text came first and used up the entire budget. The agent then spent 30+
+ * steps hunting through menus for a dialog that was real and on screen the whole time, just
+ * invisible to it. A modal sheet is always exactly what a "what's on screen right now" read most
+ * needs to see, so it's worth guaranteeing it survives the cap regardless of how much ordinary
+ * content precedes it.
+ */
+function sortModalFirst(elements: PrunedElement[]): PrunedElement[] {
+  const isModal = (e: PrunedElement) => normRole(e.role).includes("sheet");
+  const modals = elements.filter(isModal);
+  if (!modals.length) return elements;
+  return [...modals, ...elements.filter((e) => !isModal(e))];
+}
+
 export interface UiSummaryOptions {
   /** Hard cap on the returned JSON string's length. A full tree can run to hundreds of KB. */
   maxChars?: number;
@@ -287,9 +310,9 @@ function summarizeTree(raw: UiTreeResponse, opts: UiSummaryOptions = {}): string
       app: w.owner,
       role: w.role,
       title: w.name || undefined,
-      elements: (w.children ?? [])
-        .map((c) => pruneElement(c, 0, maxDepth, reliableViewport(w)))
-        .filter((c): c is PrunedElement => c !== null),
+      elements: sortModalFirst(
+        (w.children ?? []).map((c) => pruneElement(c, 0, maxDepth, reliableViewport(w))).filter((c): c is PrunedElement => c !== null),
+      ),
     }));
 
   const shownOwners = new Set(windows.map((w) => w.app));

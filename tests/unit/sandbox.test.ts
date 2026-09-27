@@ -382,6 +382,43 @@ describe("uiTreeSummary", () => {
     const saveResult = await clickElement(fakeClickSandbox([withSheet.windows[0]]).sandbox, { label: "Save", role: "button" });
     expect(saveResult.status).toBe("ok");
   });
+
+  it("keeps a modal sheet visible even when huge preceding content would otherwise truncate it away", async () => {
+    // Regression: verified against a real sandbox and a real agent run -- a Save sheet opened over
+    // an already-loaded IRS PDF form genuinely appears in the raw tree as a normal sibling
+    // element, positioned *after* the form's own (huge) content. The default 24000-char cap
+    // truncated the JSON while still inside that content, so the model's read_accessibility_tree
+    // came back with zero trace of the sheet it had just opened -- not a real gap, just bad luck
+    // in array order -- and it burned 30+ steps hunting through menus for a dialog that was on
+    // screen the entire time. sortModalFirst() (used by summarizeTree()) guarantees a "sheet" role
+    // sorts ahead of ordinary content, so it survives the cap regardless of how much precedes it.
+    const hugeContent = { name: null, role: "AXStaticText", description: "x".repeat(5000), value: null };
+    const sheet = {
+      name: null,
+      role: "AXSheet",
+      role_description: "sheet",
+      children: [{ name: "Save", role: "AXButton", role_description: "button", bbox: [1050, 562, 1126, 588] }],
+    };
+    const withHugeContentThenSheet = {
+      applications: [{ info: { name: "Safari", active: true }, windows: [1] }],
+      windows: [
+        {
+          name: "huge.pdf",
+          owner: "Safari",
+          role: "app",
+          is_on_screen: true,
+          // Several huge nodes before the sheet -- enough to blow well past a small maxChars.
+          children: [hugeContent, hugeContent, hugeContent, sheet],
+        },
+      ],
+    };
+    const json = await uiTreeSummary(fakeSandbox(withHugeContentThenSheet), { maxChars: 2000 });
+    expect(json).toContain("truncated"); // the huge content really did get cut off, this isn't a no-op cap
+    // The sheet and its Save button still made it into the (truncated) output at all, proving they
+    // were moved ahead of the huge content rather than being pushed past the cap by it.
+    expect(json).toContain('"role":"sheet"');
+    expect(json).toContain('"label":"Save"');
+  });
 });
 
 describe("clickElement", () => {
