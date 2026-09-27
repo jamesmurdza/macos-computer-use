@@ -446,16 +446,37 @@ function humanizeRole(role: string): string {
  */
 const EMPTY_LABELABLE_ROLE_HINTS = ["textarea", "textfield", "textentryarea", "searchfield", "combobox"];
 
-/** Real name/description/value first; for an otherwise-unlabeled input-shaped control, a synthetic
- * "(empty text area)"-style placeholder instead of nothing, so it stays visible and clickable by
- * that exact string. Shared by pruneElement() (what the model reads) and collectClickable() (what
- * click_element can target), so a label the model sees in the tree is always one it can click. */
+/** How much of a text-content role's `value` to keep (see `nodeLabel` below). Kept generous --
+ * this is the only way to ever read Terminal's scrollback or a long document's body -- but capped
+ * so one huge terminal session or document doesn't blow the whole tree summary's char budget.
+ * When cut, keeps the *end* of the string: for a scrolling log/shell, the most recent lines (what
+ * a "what happened" question is almost always about) are always last, not first. */
+const MAX_TEXT_VALUE_CHARS = 4000;
+
+/** Real name first, then (for a text-content role -- see EMPTY_LABELABLE_ROLE_HINTS) its `value`,
+ * then description, then value again for every other role; for an otherwise-unlabeled input-shaped
+ * control, a synthetic "(empty text area)"-style placeholder instead of nothing, so it stays
+ * visible and clickable by that exact string. Shared by pruneElement() (what the model reads) and
+ * collectClickable() (what click_element can target), so a label the model sees in the tree is
+ * always one it can click.
+ *
+ * value is checked *before* description for text-content roles specifically because of a real,
+ * verified case: Terminal.app's own text area reports `description: "shell"` (a static, useless
+ * accessibility hint, always exactly that word) while `value` holds the actual scrollback text --
+ * with the old `name || description || value` order, "shell" always won and the real output was
+ * silently unreachable no matter what command ran. Roles where `description` is itself the useful
+ * bit (most non-text-content controls) are unaffected, since this branch only fires for roles
+ * matching EMPTY_LABELABLE_ROLE_HINTS in the first place.
+ */
 function nodeLabel(node: UiElementNode): string | undefined {
-  const real = node.name || node.description || (typeof node.value === "string" ? node.value : undefined) || undefined;
-  if (real) return real;
   const role = node.role_description || node.role;
+  const isTextContentRole = !!role && EMPTY_LABELABLE_ROLE_HINTS.some((k) => normRole(role).includes(k));
+  const rawValue = typeof node.value === "string" && node.value ? node.value : undefined;
+  const value = rawValue && rawValue.length > MAX_TEXT_VALUE_CHARS ? `…(truncated)${rawValue.slice(-MAX_TEXT_VALUE_CHARS)}` : rawValue;
+  const real = node.name || (isTextContentRole ? value : undefined) || node.description || value || undefined;
+  if (real) return real;
   if (!role) return undefined;
-  return EMPTY_LABELABLE_ROLE_HINTS.some((k) => normRole(role).includes(k)) ? `(empty ${humanizeRole(role)})` : undefined;
+  return isTextContentRole ? `(empty ${humanizeRole(role)})` : undefined;
 }
 
 /** Every clickable, labeled element currently on screen, with the point to click. */

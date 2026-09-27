@@ -115,6 +115,63 @@ describe("uiTreeSummary", () => {
     expect(parsed.windows[0].elements).toEqual([{ role: "AXTextArea", label: "(empty text area)" }]);
   });
 
+  it("reads a text area's real content from value, not a generic description that masks it", async () => {
+    // Regression: verified against a real sandbox that Terminal.app's shell view reports
+    // `description: "shell"` (a static, useless accessibility hint -- always exactly that word,
+    // never the actual output) while `value` holds the real scrollback text. With the old
+    // `name || description || value` order, "shell" always won and command output was completely
+    // unreachable no matter what ran -- e.g. `system_profiler` genuinely executing with no way to
+    // ever read its result back. `description` still wins for non-text-content roles (a button's
+    // hint, say), since this reordering only applies to roles in EMPTY_LABELABLE_ROLE_HINTS.
+    const withTerminalOutput = {
+      applications: [{ info: { name: "Terminal", active: true }, windows: [1] }],
+      windows: [
+        {
+          name: "Terminal",
+          owner: "Terminal",
+          role: "app",
+          is_on_screen: true,
+          children: [
+            {
+              name: null,
+              role: "AXTextArea",
+              role_description: "text entry area",
+              description: "shell",
+              value: "lume@lumes-Virtual-Machine ~ % echo HELLO\nHELLO\nlume@lumes-Virtual-Machine ~ % ",
+              children: [],
+            },
+          ],
+        },
+      ],
+    };
+    const json = await uiTreeSummary(fakeSandbox(withTerminalOutput));
+    const parsed = JSON.parse(json);
+    expect(parsed.windows[0].elements).toEqual([
+      { role: "text entry area", label: "lume@lumes-Virtual-Machine ~ % echo HELLO\nHELLO\nlume@lumes-Virtual-Machine ~ % " },
+    ]);
+  });
+
+  it("truncates a huge text area value, keeping the end (most recent output), not the start", async () => {
+    const longValue = `${"x".repeat(5000)}TAIL_MARKER`;
+    const withHugeScrollback = {
+      applications: [{ info: { name: "Terminal", active: true }, windows: [1] }],
+      windows: [
+        {
+          name: "Terminal",
+          owner: "Terminal",
+          role: "app",
+          is_on_screen: true,
+          children: [{ name: null, role: "AXTextArea", role_description: "text entry area", description: "shell", value: longValue, children: [] }],
+        },
+      ],
+    };
+    const json = await uiTreeSummary(fakeSandbox(withHugeScrollback));
+    const parsed = JSON.parse(json);
+    const label = parsed.windows[0].elements[0].label as string;
+    expect(label.length).toBeLessThan(longValue.length);
+    expect(label.endsWith("TAIL_MARKER")).toBe(true);
+  });
+
   it("drops an off-screen (scrolled-past) element's label but still keeps an on-screen sibling", async () => {
     // Regression: verified against a real, loaded Wikipedia page that its window carries a real
     // `bounds` rect, and that without this filter a deep web page's off-screen content (nav menus,
