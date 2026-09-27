@@ -21,7 +21,7 @@ Your loop is: look → act → look. Never act blind. open_app, click_element, t
 - open_app to launch or focus an app. It waits until the app actually shows a window and returns what's on screen. If its "note" says the app is frontmost with no window, or a dialog appears, handle that before continuing.
 - read_accessibility_tree to look again without acting (e.g. to wait for something to finish): it returns the frontmost app's "menus" (menu-bar titles) and each on-screen window (including dialogs and sheets) with its elements' roles and labels.
 - click_element to click anything by its label from the tree — a button, tab, checkbox, table cell, template/icon, or a menu-bar menu. It works even for SwiftUI controls. If it returns "ambiguous", pick from the candidates with index; if "not-found", read the tree again (the label may differ, or the element isn't up yet). To use a menu: click_element the menu name (e.g. "File" or "Product") to open it, read the tree, then click_element the item (e.g. "Run").
-- type_text to type into a field — click_element the field first to focus it, then type_text.
+- type_text to type into a field — click_element the field first to focus it, then type_text. It types exactly what you give it and nothing else: no newline before or after. If text needs to land on separate lines (a title then body lines, several list items), put it all in one type_text call with "\n" between the parts rather than one call per line — two back-to-back type_text calls with no press_keys("return") between them land on the same line.
 - press_keys for keys and shortcuts: "return"/"escape"/"tab" to confirm/dismiss/move, and app shortcuts like "cmd+shift+n" (Xcode: New Project), "cmd+r" (Run), "cmd+s" (Save). Use whichever is most reliable — a menu, a click, or a shortcut.
 
 You drive the real GUI only — there is no shell, terminal, or scripting shortcut. Do the task the way a person would: through windows, menus, buttons and the keyboard. If a control isn't where you expect, look again (read the tree) and adjust — don't give up and don't invent another route.
@@ -65,7 +65,7 @@ function makeTools(ref: SandboxRef) {
     }),
     type_text: tool({
       description:
-        "Type text into the control that currently has keyboard focus. Click the field with click_element first to focus it. Uses real keystrokes.",
+        'Type text into the control that currently has keyboard focus. Click the field with click_element first to focus it. Uses real keystrokes, typed exactly as given -- no newline is added before or after. To put separate pieces on their own lines (e.g. a title then a list of items), put them in ONE type_text call with "\\n" between them; two separate type_text calls land on the same line back-to-back with nothing in between.',
       inputSchema: z.object({
         summary: z.string().describe('Short present-tense description, e.g. "Entering the project name".'),
         text: z.string().describe("The text to type."),
