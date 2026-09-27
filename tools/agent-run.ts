@@ -37,6 +37,13 @@
  * sandbox and cannot be stopped/downloaded through the new one -- this is detected and reported
  * (not silently swallowed), but the video itself is lost in that case. The event log and metadata
  * are still written and uploaded either way.
+ *
+ * Killing an unproductive run: send SIGTERM/SIGINT (a plain `kill <pid>` or Ctrl-C) rather than
+ * SIGKILL (`kill -9`) -- SIGTERM/SIGINT are caught here to abort the agent loop and run the exact
+ * same recording-stop/download/upload cleanup a normal finish does (status ends up "error", so it
+ * won't appear in the public gallery, but the video/log/meta are all still saved). SIGKILL can't
+ * be caught by any process, so it always loses the recording; a second SIGTERM/SIGINT forces an
+ * immediate exit too, for the rare case where the in-flight tool call itself is hung.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -138,6 +145,36 @@ let replyBuf = "";
 let inputTokens: number | undefined;
 let outputTokens: number | undefined;
 
+/**
+ * Whoever's driving this run (a human watching it live, or another Claude instance monitoring a
+ * batch of these) needs to be able to kill a run that's stopped being productive without losing
+ * the recording -- a plain `kill <pid>` sends SIGTERM, and Node's default response to an
+ * unhandled SIGTERM is to terminate immediately, skipping the `finally` block below entirely
+ * (verified against a real run: the sandbox was left dangling, still "active", with its recording
+ * never stopped -- by the time anyone went back for it, the sandbox had already been reaped and
+ * the video was gone for good). Catching the signal and aborting the in-flight streamAgent() call
+ * instead lets that same `finally` block run normally, so the recording still gets
+ * stopped/downloaded/uploaded and the sandbox still gets closed -- the run just ends with
+ * status "error" (not added to the public gallery index, but the raw artifacts are preserved in
+ * R2 and locally, same as any other failed run) instead of "ok".
+ *
+ * A second signal forces an immediate exit -- e.g. if the in-flight tool call's own HTTP request
+ * to the sandbox is itself hung and the abort doesn't unblock it quickly enough to matter.
+ */
+const abortController = new AbortController();
+let killSignal: NodeJS.Signals | undefined;
+function handleKillSignal(signal: NodeJS.Signals): void {
+  if (killSignal) {
+    console.error(`\nReceived ${signal} again -- forcing immediate exit (recording may be lost).`);
+    process.exit(1);
+  }
+  killSignal = signal;
+  console.error(`\nReceived ${signal} -- aborting the agent loop so the recording is stopped/saved before exit...`);
+  abortController.abort();
+}
+process.on("SIGTERM", handleKillSignal);
+process.on("SIGINT", handleKillSignal);
+
 try {
   if (resolution) {
     const r = await setDisplayResolution(sandboxRef.current, resolution.width, resolution.height);
@@ -150,7 +187,7 @@ try {
   logEvent({ ts: videoStartedAt, elapsedMs: 0, type: "run-start", runId, prompt, modelChoice, sandboxId: sandbox.sandboxId, recordingId });
 
   const pending = new Map<string, { tool: string }>();
-  for await (const ev of streamAgent({ prompt, modelChoice, sandboxRef, history: [], maxSteps })) {
+  for await (const ev of streamAgent({ prompt, modelChoice, sandboxRef, history: [], maxSteps, signal: abortController.signal })) {
     const now = Date.now();
     const elapsedMs = now - videoStartedAt;
     logEvent({ ts: now, elapsedMs, ...withoutVncUrl(ev) });
@@ -182,6 +219,17 @@ try {
   errorMessage = err instanceof Error ? err.message : String(err);
   console.error("RUN FAILED:", errorMessage);
 } finally {
+  // streamAgent() treats an aborted signal as a clean-ish shutdown internally (it yields a normal
+  // "done" event rather than throwing -- see its own doc comment), so a killed run would
+  // otherwise fall through with status still "ok" even though the task never actually finished.
+  // Override explicitly, using killSignal (set synchronously by the signal handler above) rather
+  // than relying on an exception that may never come.
+  if (killSignal) {
+    status = "error";
+    errorMessage = `Terminated by ${killSignal} after ${stepCount} step(s) (recording preserved below).`;
+    console.error(`\n${errorMessage}`);
+  }
+
   const rotated = sandboxRef.current.sandboxId !== sandbox.sandboxId;
   if (rotated) {
     console.warn(
