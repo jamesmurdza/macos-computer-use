@@ -83,6 +83,56 @@ immediately before that action — "what changed as a result of what I just did"
 diff-shaped and is exactly the self-verification question that matters, without giving up full
 visibility on demand.
 
+### 4. Electron-app support
+
+Every task exercised so far has driven native AppKit/SwiftUI apps (Safari, Preview, TextEdit,
+Finder) or web content inside Safari. A large share of real-world macOS apps someone might actually
+want automated — Slack, VS Code, Discord, Figma, Notion, and many others — are Electron apps: a
+Chromium web view wrapped in a native shell. Chromium's accessibility bridge on macOS can expose a
+reasonable AX tree *when the app's own web content has real ARIA roles/labels*, but plenty of
+Electron apps expose only a large, sparse, mostly-unlabeled "WebArea" with none of the structure
+`collectClickable()`/`nearLabel` currently depend on — a version of today's PDF-field problem, but
+potentially spanning an entire app's UI rather than one form.
+
+**This is a hypothesis, not a finding — flagging that distinction explicitly, unlike the
+evidence-backed items above.** Checked the base sandbox image directly while writing this: it has
+no Electron apps installed at all (just Apple's own bundled apps, plus Xcode and iTerm), so the
+actual accessibility-tree quality on a real Electron app couldn't be verified here. Getting a real
+answer requires first solving a prerequisite that hasn't been attempted either: installing a
+third-party app onto the sandbox (e.g. downloading a `.dmg`/`.pkg` via Safari and driving its
+installer — itself untested) or confirming the App Store has a usable Electron app already
+signed in and installable.
+
+If the hypothesis holds, this becomes a strong argument for #1 (vision) as a fallback modality —
+an Electron app with a poor AX tree is exactly the case where "just look at the screen" degrades
+most gracefully. Worth confirming before investing further, not before then.
+
+### 5. A Playwright-driven browser as a second automation modality
+
+Idea: alongside (not instead of) driving Safari through the accessibility tree, give the agent
+(or the harness itself, for specific steps) the ability to control a real browser via Playwright —
+direct DOM access, real selectors, robust built-in waiting, no dependency on the macOS
+accessibility bridge for web content at all.
+
+Concrete connection to something actually observed today: more than one run wasted steps because
+navigating to a URL depends on first clicking Safari's smart-search field before typing — a small
+but real source of flakiness (a skipped or mistimed click derails the whole first step). A
+Playwright `page.goto(url)` sidesteps that entire class of failure for the "navigate to a URL" step
+specifically, since there's no field to click at all.
+
+Real limits on how far this helps, though:
+- **Doesn't touch the PDF-form problem from today.** A PDF rendered by a browser's built-in viewer
+  (Safari's or Chromium's) isn't part of the page DOM either way — Playwright selectors wouldn't
+  see PDF form fields any better than the accessibility tree does. This is a fix for *web content*
+  tasks specifically, not GUI automation broadly.
+- **Tension with this repo's actual purpose.** The point of this harness is a human-watchable
+  recording of an agent driving a real, visible macOS sandbox (see the gallery). A Playwright
+  browser can run headed and still show up in the screen recording, but a headless instance
+  would not — worth deciding deliberately rather than defaulting to headless for speed.
+- Would need its own decision about when the agent reaches for Playwright vs. the existing
+  GUI tools — e.g. only for an explicit "go to this URL and do X" step, not as a general
+  replacement for driving Safari as an app.
+
 ## Lower priority (discussed and considered, but not well-motivated by observed failures)
 
 ### A menu explorer ability
@@ -103,9 +153,14 @@ current evidence it would move the needle on the failures actually seen.
 
 - None of the above should be built speculatively — per this repo's own debugging guide
   (`agent-debugging-guide.md`), verify the specific hypothesis each idea depends on against a real
-  sandbox before writing permanent code (especially true for #3's identity-stability question).
+  sandbox before writing permanent code (especially true for #3's identity-stability question and
+  #4's AX-tree-quality question, neither of which is actually confirmed yet).
 - #1 and #2 target genuinely different failure classes (visual/state-detection gaps vs. multi-step
   native-dialog flakiness) and aren't mutually exclusive — both are worth having eventually.
 - #3 is the one most directly tied to a hard, reproducible infrastructure failure (a context-window
   ceiling) rather than a reliability/convenience question, which may argue for prioritizing it
   despite the open technical risk, if long-running tasks on smaller-context models are a priority.
+- #4 and #5 both expand *coverage* (what kinds of apps/tasks work at all) rather than fixing
+  *reliability* on tasks already attempted — a different kind of investment than #1-#3, worth
+  weighing against how much appetite there is for testing entirely new app/task categories versus
+  hardening the ones already in use.
