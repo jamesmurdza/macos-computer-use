@@ -23,6 +23,40 @@ turn/session -- test scripts I wrote to a probe/`tools/_*.mjs` file, scratch obj
 verify something (e.g. `probe/*.txt`), local `.next` build caches, or orphaned dev-server
 processes I started. Those are mine to clean up freely; they were never the user's deliverable.
 
+## Debugging GUI-automation reliability (agent-run.ts / the accessibility harness)
+
+Spent 2026-09-27 chasing why the taxes/W-9 demo kept failing across several models. Brief version
+of what actually worked, for whoever (probably me) picks this up next with no memory of it:
+
+- **A screenshot is ground truth; the accessibility tree and the model's own summary are not.**
+  Every real bug this session (a checkbox with no accessible element, a save that silently left
+  two fields empty, a "not interactable" claim contradicted by the model's own prior successful
+  click) was only actually confirmed by cropping and zooming a real screenshot. Don't trust
+  `status: "ok"` or a model's "I completed it" -- check the artifact.
+- **When several different models all fail the same task in different-looking ways, stop
+  swapping models and go read the raw `uiTree()` data first.** It's almost always a shared harness
+  gap, not N separate model weaknesses. `src/lib/sandbox.ts` already has `nearLabel` (click by
+  proximity to a stable on-screen label instead of a shifting numeric index -- use this for any
+  form with repeated identical field labels), `frontmost`/`zIndex` on windows (which window is
+  actually on top, when an app has several), and `verified: false` on `type_text` (whether the
+  typed text actually landed anywhere). If a new bug smells like these, check whether one of these
+  already covers it before adding a new prompt workaround.
+- **Before spending money on a new model, check its context window and price from a live
+  OpenRouter catalog query (`GET /v1/models`), not memory.** This harness resends the full
+  accessibility tree every step, so a long task can blow past a small context window (verified: a
+  131K-token model died mid-task) well before it ever demonstrates whether it's actually capable.
+- **Comparing models is only fair if the harness/prompt is frozen first**, then run every
+  candidate in parallel against the identical setup. Sequential trials while also fixing bugs in
+  between aren't a real comparison, just a debugging log.
+- **Multiple sandboxes (2 max, per the reservation) save wall-clock time, not money or attention.**
+  Running two at once is worth it, but don't let it mean checking either one's result less
+  carefully than you would a single run.
+- Throwaway verification scripts go in `tools/_probe-*.ts`, get deleted the moment they've answered
+  the question (per the deletion-rule note above -- these are mine, not the user's deliverable).
+  Verify a hypothesis against a real sandbox this way *before* writing it into a system prompt or
+  permanent code -- I nearly shipped a wrong claim ("clicking a checkbox doesn't move focus") into
+  the system prompt and caught it only by testing it first.
+
 <!-- BEGIN:nextjs-agent-rules -->
 
 # This is NOT the Next.js you know
