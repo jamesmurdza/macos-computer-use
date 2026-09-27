@@ -335,6 +335,7 @@ function summarizeTree(raw: UiTreeResponse, opts: UiSummaryOptions = {}): string
 
   // Every on-screen window that isn't OS chrome — dialogs and sheets included, and blank/not-yet-
   // rendered windows too (an empty window of the frontmost app is itself a useful signal).
+  const activeApp = (raw.applications ?? []).find((a) => a.info.active)?.info.name;
   const windows = (raw.windows ?? [])
     .filter((w) => w.is_on_screen && !SYSTEM_CHROME_OWNERS.has(w.owner))
     .map((w) => ({
@@ -344,7 +345,24 @@ function summarizeTree(raw: UiTreeResponse, opts: UiSummaryOptions = {}): string
       elements: sortModalFirst(
         (w.children ?? []).map((c) => pruneElement(c, 0, maxDepth, reliableViewport(w))).filter((c): c is PrunedElement => c !== null),
       ),
-    }));
+    }))
+    // A second, window-level instance of the same problem sortModalFirst solves at the element
+    // level: verified against a real sandbox that Preview's own "Open" file dialog (a genuine,
+    // separate top-level window, 36KB of real content -- the filename list, Documents sidebar,
+    // Open/Cancel buttons) sat right after Safari's window for the same huge IRS PDF (282KB raw)
+    // in the gateway's own array order. The char cap truncated the combined JSON deep inside
+    // Safari's content, long before ever reaching Preview's dialog -- cmd+o had genuinely worked,
+    // but neither the agent nor this code could see it, and repeated retries kept "failing" the
+    // exact same way. The active/frontmost app's own window is the one most likely to be what a
+    // "what's on screen" read actually needs, so it goes first; everything else sorts by ascending
+    // serialized size, so small, information-dense windows (dialogs, alerts) outlast large,
+    // mostly-irrelevant background ones when the cap does have to cut something.
+    .sort((a, b) => {
+      const aActive = a.app === activeApp ? 0 : 1;
+      const bActive = b.app === activeApp ? 0 : 1;
+      if (aActive !== bActive) return aActive - bActive;
+      return JSON.stringify(a.elements).length - JSON.stringify(b.elements).length;
+    });
 
   const shownOwners = new Set(windows.map((w) => w.app));
   const noWindow = (raw.applications ?? [])

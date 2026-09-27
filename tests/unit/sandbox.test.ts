@@ -73,7 +73,10 @@ describe("uiTreeSummary", () => {
       { name: "Xcode", active: true },
     ]);
     expect(parsed.windows).toHaveLength(2);
-    expect(parsed.windows.map((w: { app: string }) => w.app)).toEqual(["Finder", "Xcode"]);
+    // Xcode (the active/frontmost app) sorts first -- see the windows-array sort in
+    // summarizeTree(): the active app's own window is what a "what's on screen" read most needs,
+    // so it's prioritized to survive the char cap ahead of any background window.
+    expect(parsed.windows.map((w: { app: string }) => w.app)).toEqual(["Xcode", "Finder"]);
   });
 
   it("prunes elements to role/label, dropping empty wrappers and geometry", async () => {
@@ -398,7 +401,12 @@ describe("uiTreeSummary", () => {
 
     const json = await uiTreeSummary(sandbox);
     const parsed = JSON.parse(json);
-    const mainWindow = parsed.windows[0];
+    // Both windows are owned by Safari (the active app), so the active-app-first sort ties between
+    // them and falls through to size -- the empty duplicate pseudo-window (0 elements) legitimately
+    // sorts ahead of the real content window here, which is fine: unlike the truncation case this
+    // guards against, both fit comfortably under the cap regardless of order. Find the real one by
+    // content rather than assuming an index.
+    const mainWindow = parsed.windows.find((w: { elements: unknown[] }) => w.elements.length > 0);
     expect(mainWindow.elements).toEqual([
       {
         role: "sheet",
@@ -457,6 +465,51 @@ describe("uiTreeSummary", () => {
     // were moved ahead of the huge content rather than being pushed past the cap by it.
     expect(json).toContain('"role":"sheet"');
     expect(json).toContain('"label":"Save"');
+  });
+
+  it("keeps a different app's real dialog window visible ahead of another app's huge window", async () => {
+    // The window-level counterpart to the sheet regression above, and the actual root cause of a
+    // real failure: verified against a real sandbox that Preview's own "Open" file dialog is a
+    // genuine, separate top-level window (real content: the Documents sidebar, the file list,
+    // Open/Cancel buttons) -- not nested inside Safari's window as a sheet, so sortModalFirst()
+    // alone can't help it. It sat right after Safari's window for the same huge IRS PDF in the
+    // gateway's own array order, so the char cap truncated deep inside Safari's content before
+    // ever reaching Preview's dialog. cmd+o had genuinely worked every time; three separate real
+    // agent runs "saw" it fail anyway and burned dozens of steps retrying/giving up. Preview was
+    // the active/frontmost app in all of them, so sorting the active app's window first (ahead of
+    // any background window, regardless of size) fixes exactly this.
+    const safariHugeContent = { name: null, role: "AXStaticText", description: "x".repeat(3000), value: null };
+    const withActiveAppDialogBehindHugeBackground = {
+      applications: [
+        { info: { name: "Safari", active: false }, windows: [1] },
+        { info: { name: "Preview", active: true }, windows: [1] },
+      ],
+      windows: [
+        {
+          name: "https://www.irs.gov/pub/irs-pdf/fw9.pdf",
+          owner: "Safari",
+          role: "app",
+          is_on_screen: true,
+          children: [safariHugeContent, safariHugeContent, safariHugeContent, safariHugeContent],
+        },
+        {
+          name: "Open",
+          owner: "Preview",
+          role: "app",
+          is_on_screen: true,
+          children: [
+            { name: "fw9.pdf", role: "AXTextField", role_description: "text field", bbox: [0, 0, 100, 20] },
+            { name: "Open", role: "AXButton", role_description: "button", bbox: [0, 0, 20, 20] },
+          ],
+        },
+      ],
+    };
+    const json = await uiTreeSummary(fakeSandbox(withActiveAppDialogBehindHugeBackground), { maxChars: 500 });
+    expect(json).toContain("truncated"); // Safari's content really did get cut, this isn't a no-op cap
+    // Preview's dialog -- the active app's own window -- still made it in, proving it was sorted
+    // ahead of Safari's window rather than pushed past the cap by it.
+    expect(json).toContain('"title":"Open"');
+    expect(json).toContain('"label":"fw9.pdf"');
   });
 });
 
