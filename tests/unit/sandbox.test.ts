@@ -193,6 +193,33 @@ describe("uiTreeSummary", () => {
     ]);
   });
 
+  it("reads a text field's real typed value, not its own static caption masking it", async () => {
+    // Regression, verified against a real sandbox: Xcode's "New Project" sheet reports the
+    // Product Name field's `name` as "Product_Name:" -- the field's own static caption, unchanged
+    // whether the field is empty or full -- while `value` holds whatever was actually typed. With
+    // the old `name || value || description` order, the caption always won: a real agent run typed
+    // "HelloTimer", read the tree, saw only "Product_Name:" with no sign its own typing had
+    // landed, concluded the type had failed, and retyped into the same field without clearing it
+    // first -- producing "HelloTimerHelloTimer" in the actual project. `name` still wins for
+    // non-text-content roles, since this reordering only applies to roles in
+    // EMPTY_LABELABLE_ROLE_HINTS.
+    const withTypedProductName = {
+      applications: [{ info: { name: "Xcode", active: true }, windows: [1] }],
+      windows: [
+        {
+          name: "Unnamed Window",
+          owner: "Xcode",
+          role: "app",
+          is_on_screen: true,
+          children: [{ name: "Product_Name:", role: "AXTextField", role_description: "text field", value: "HelloTimer", children: [] }],
+        },
+      ],
+    };
+    const json = await uiTreeSummary(fakeSandbox(withTypedProductName));
+    const parsed = JSON.parse(json);
+    expect(parsed.windows[0].elements).toEqual([{ role: "text field", label: "HelloTimer" }]);
+  });
+
   it("truncates a huge text area value, keeping the end (most recent output), not the start", async () => {
     const longValue = `${"x".repeat(5000)}TAIL_MARKER`;
     const withHugeScrollback = {
