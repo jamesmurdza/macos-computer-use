@@ -155,7 +155,7 @@ const SYSTEM_CHROME_OWNERS = new Set(["Notification Center", "Control Center", "
 
 /** role/label/children only — drops ids, geometry, and structural wrappers with nothing in them. */
 function pruneElement(node: UiElementNode, depth: number, maxDepth: number): PrunedElement | null {
-  const label = node.name || node.description || (typeof node.value === "string" ? node.value : undefined) || undefined;
+  const label = nodeLabel(node);
   const children =
     depth < maxDepth && Array.isArray(node.children)
       ? node.children.map((c) => pruneElement(c, depth + 1, maxDepth)).filter((c): c is PrunedElement => c !== null)
@@ -320,13 +320,39 @@ function nodeCenter(node: UiElementNode): { cx: number; cy: number } | null {
   return { cx: (x1 + x2) / 2, cy: (y1 + y2) / 2 };
 }
 
-function nodeLabel(node: UiElementNode): string | undefined {
-  return node.name || node.description || (typeof node.value === "string" ? node.value : undefined) || undefined;
-}
-
 /** Normalize a role for tolerant matching: lowercase, drop spaces and a leading "AX". */
 function normRole(s: string): string {
   return s.toLowerCase().replace(/\s+/g, "").replace(/^ax/, "");
+}
+
+/** "AXTextArea" -> "text area", "AXStaticText" -> "static text". */
+function humanizeRole(role: string): string {
+  return role
+    .replace(/^AX/, "")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .toLowerCase();
+}
+
+/**
+ * Roles worth surfacing (and clicking into) even with no text yet -- an empty input's accessible
+ * name/value is normally blank until something is typed, which would otherwise make it vanish
+ * entirely from both the tree summary and collectClickable() below (both require a label). Verified
+ * against a real sandbox: a brand-new, empty Notes document's whole editor is exactly this -- an
+ * `AXTextArea` with no name, description, or value at all -- so without this fallback there is
+ * *no way* to ever see or click into it once it's empty.
+ */
+const EMPTY_LABELABLE_ROLE_HINTS = ["textarea", "textfield", "textentryarea", "searchfield", "combobox"];
+
+/** Real name/description/value first; for an otherwise-unlabeled input-shaped control, a synthetic
+ * "(empty text area)"-style placeholder instead of nothing, so it stays visible and clickable by
+ * that exact string. Shared by pruneElement() (what the model reads) and collectClickable() (what
+ * click_element can target), so a label the model sees in the tree is always one it can click. */
+function nodeLabel(node: UiElementNode): string | undefined {
+  const real = node.name || node.description || (typeof node.value === "string" ? node.value : undefined) || undefined;
+  if (real) return real;
+  const role = node.role_description || node.role;
+  if (!role) return undefined;
+  return EMPTY_LABELABLE_ROLE_HINTS.some((k) => normRole(role).includes(k)) ? `(empty ${humanizeRole(role)})` : undefined;
 }
 
 /** Every clickable, labeled element currently on screen, with the point to click. */
@@ -356,17 +382,57 @@ function collectClickable(raw: UiTreeResponse, app?: string): FoundElement[] {
   return out;
 }
 
+/**
+ * Roles considered actually clickable/actionable in the sense a caller means when they say "click
+ * X" without specifying a role -- as opposed to a plain, inert text label. Used only to break ties
+ * in clickElement() when the label alone is ambiguous.
+ */
+const INTERACTIVE_ROLE_HINTS = [
+  "button",
+  "menuitem",
+  "menubaritem",
+  "checkbox",
+  "radiobutton",
+  "tab",
+  "link",
+  "cell",
+  "row",
+  "popupbutton",
+  "textfield",
+  "textentryarea",
+  "textarea",
+  "combobox",
+];
+
+/** 2 = an interactive control, 1 = anything else, 0 = plain inert text. Higher wins a tie when
+ * clickElement() has multiple same-label matches and no explicit role/index to disambiguate. */
+function interactionRank(role: string): number {
+  const r = normRole(role);
+  if (r === "text" || r === "statictext") return 0;
+  return INTERACTIVE_ROLE_HINTS.some((k) => r.includes(k)) ? 2 : 1;
+}
+
 function matchElements(all: FoundElement[], role: string | undefined, label: string): FoundElement[] {
   const wantRole = role ? normRole(role) : "";
-  const roleOk = (e: FoundElement) => {
+  const labelLc = label.toLowerCase();
+  const roleMatches = (e: FoundElement, exact: boolean): boolean => {
     if (!wantRole) return true;
     const r = normRole(e.role);
-    return r.includes(wantRole) || wantRole.includes(r);
+    return exact ? r === wantRole : r.includes(wantRole) || wantRole.includes(r);
   };
-  const labelLc = label.toLowerCase();
-  const exact = all.filter((e) => roleOk(e) && e.label.toLowerCase() === labelLc);
-  if (exact.length) return exact;
-  return all.filter((e) => roleOk(e) && e.label.toLowerCase().includes(labelLc));
+
+  for (const labelExact of [true, false]) {
+    const byLabel = all.filter((e) => (labelExact ? e.label.toLowerCase() === labelLc : e.label.toLowerCase().includes(labelLc)));
+    if (!byLabel.length) continue;
+    // An exact role match always wins over a loose substring one within this label tier -- e.g. an
+    // explicit role: "text entry area" must not be diluted by plain "text" nodes just because
+    // "text" happens to be a substring of the normalized role name "textentryarea".
+    const exactRole = byLabel.filter((e) => roleMatches(e, true));
+    if (exactRole.length) return exactRole;
+    const looseRole = byLabel.filter((e) => roleMatches(e, false));
+    if (looseRole.length) return looseRole;
+  }
+  return [];
 }
 
 /**
@@ -387,6 +453,17 @@ export async function clickElement(sandbox: SandboxHandle, opts: UiClickOptions)
   }
   if (matches.length === 0) {
     return withScreen(sandbox, { status: "not-found", message: `no on-screen element matching label "${opts.label}"${opts.role ? ` (role "${opts.role}")` : ""}` });
+  }
+  // Silently break the single most common tie before it ever reaches the model: an AppKit
+  // button/cell/row and its own nested text label routinely expose the exact same accessible name
+  // (e.g. a sidebar's "New Note" row is both a clickable cell *and* a plain text child both named
+  // "New Note"). When narrowing to the highest interaction rank leaves exactly one candidate, use
+  // it directly instead of forcing a round trip to ask which one was meant. A genuine tie at the
+  // same rank (e.g. two buttons sharing a label) still falls through to "ambiguous" below, and this
+  // narrowing happens before `index` is resolved so a retry's index lines up with what was reported.
+  if (matches.length > 1) {
+    const maxRank = Math.max(...matches.map((m) => interactionRank(m.role)));
+    matches = matches.filter((m) => interactionRank(m.role) === maxRank);
   }
   let target: FoundElement;
   if (opts.index && opts.index > 0) {

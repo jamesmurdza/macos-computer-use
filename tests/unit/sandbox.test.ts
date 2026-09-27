@@ -1,10 +1,27 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { SandboxHandle } from "../../src/lib/sandbox-handle.js";
-import { screenshotUrl, uiTreeSummary } from "../../src/lib/sandbox.js";
+import { clickElement, screenshotUrl, uiTreeSummary } from "../../src/lib/sandbox.js";
 
 /** A trimmed real `uiTree()` response: one background app, one real window with nested elements. */
 function fakeSandbox(uiTree: unknown): SandboxHandle {
   return { uiTree: async () => uiTree } as unknown as SandboxHandle;
+}
+
+/** A clickable node: a labeled, on-screen element with a real rectangle to compute a click point from. */
+function node(role: string, label: string, bbox: [number, number, number, number]) {
+  return { name: label, role, bbox };
+}
+
+/** One on-screen window owned by `app`, holding the given clickable nodes. */
+function windowWith(app: string, children: unknown[]) {
+  return { name: app, owner: app, role: "app", is_on_screen: true, children };
+}
+
+/** `uiTree()` fake plus a `mouse.click` spy, for exercising clickElement() end to end. */
+function fakeClickSandbox(windows: unknown[]) {
+  const click = vi.fn(async () => {});
+  const sandbox = { uiTree: async () => ({ windows }), mouse: { click } } as unknown as SandboxHandle;
+  return { sandbox, click };
 }
 
 describe("uiTreeSummary", () => {
@@ -68,6 +85,107 @@ describe("uiTreeSummary", () => {
     const json = await uiTreeSummary(fakeSandbox(sample), { maxChars: 40 });
     expect(json.length).toBeGreaterThan(40); // cap + truncation marker
     expect(json).toContain("…(truncated");
+  });
+
+  it("gives an empty-but-interactive element a synthetic label instead of dropping it", async () => {
+    // Regression: verified against a real sandbox that a brand-new, empty Notes document's entire
+    // editor is exactly this -- an AXTextArea with no name, description, or value at all -- which
+    // otherwise vanishes from the tree (and from click_element, since both require a label),
+    // leaving no way to ever click into an empty input once it's been created.
+    const withEmptyEditor = {
+      applications: [{ info: { name: "Notes", active: true }, windows: [1] }],
+      windows: [
+        {
+          name: "Notes",
+          owner: "Notes",
+          role: "app",
+          is_on_screen: true,
+          children: [{ name: null, role: "AXTextArea", description: null, value: null, children: [] }],
+        },
+      ],
+    };
+    const json = await uiTreeSummary(fakeSandbox(withEmptyEditor));
+    const parsed = JSON.parse(json);
+    expect(parsed.windows[0].elements).toEqual([{ role: "AXTextArea", label: "(empty text area)" }]);
+  });
+
+  it("still drops an empty element whose role isn't an input (e.g. a bare wrapper AXGroup)", async () => {
+    const withEmptyGroup = {
+      applications: [{ info: { name: "Notes", active: true }, windows: [1] }],
+      windows: [
+        {
+          name: "Notes",
+          owner: "Notes",
+          role: "app",
+          is_on_screen: true,
+          children: [{ name: null, role: "AXGroup", description: null, value: null, children: [] }],
+        },
+      ],
+    };
+    const json = await uiTreeSummary(fakeSandbox(withEmptyGroup));
+    const parsed = JSON.parse(json);
+    expect(parsed.windows[0].elements).toEqual([]);
+  });
+});
+
+describe("clickElement", () => {
+  it("can click an empty text area by the same synthetic label uiTreeSummary shows for it", async () => {
+    // End-to-end version of the uiTreeSummary regression above: an unlabeled AXTextArea (a
+    // brand-new, empty Notes document, verified against a real sandbox) must be clickable by
+    // exactly the synthetic label the model would have read from the tree -- not just a plain
+    // element that already happens to be named that.
+    const emptyEditor = { name: null, role: "AXTextArea", description: null, value: null, bbox: [10, 20, 210, 220] };
+    const { sandbox, click } = fakeClickSandbox([windowWith("Notes", [emptyEditor])]);
+    const result = await clickElement(sandbox, { label: "(empty text area)" });
+    expect(result.status).toBe("ok");
+    expect(click).toHaveBeenCalledWith(110, 120);
+  });
+
+  it("auto-resolves a button and its own nested text label sharing one name, instead of asking", async () => {
+    // The extremely common AppKit pattern this targets: a sidebar row is both a clickable button
+    // and contains a plain text child with the identical accessible name -- e.g. Notes' "New Note".
+    const { sandbox, click } = fakeClickSandbox([
+      windowWith("Notes", [node("AXStaticText", "New Note", [10, 10, 90, 30]), node("AXButton", "New Note", [0, 0, 100, 40])]),
+    ]);
+    const result = await clickElement(sandbox, { label: "New Note" });
+    expect(result.status).toBe("ok");
+    expect(click).toHaveBeenCalledWith(50, 20); // the button's center, not the text's
+  });
+
+  it("still reports ambiguous for a genuine tie between two equally-ranked elements", async () => {
+    const { sandbox, click } = fakeClickSandbox([
+      windowWith("Finder", [node("AXButton", "OK", [0, 0, 20, 20]), node("AXButton", "OK", [100, 100, 120, 120])]),
+    ]);
+    const result = await clickElement(sandbox, { label: "OK" });
+    expect(result.status).toBe("ambiguous");
+    expect(result.candidates).toHaveLength(2);
+    expect(click).not.toHaveBeenCalled();
+  });
+
+  it("an exact role match isn't diluted by a same-label node whose role loosely contains it as a substring", async () => {
+    // Regression: normRole("text entry area") = "textentryarea", which naively .includes("text") --
+    // a plain AXStaticText node must not sneak into an explicit role: "text entry area" match.
+    const { sandbox, click } = fakeClickSandbox([
+      windowWith("Notes", [node("AXStaticText", "Shopping List", [0, 0, 10, 10]), node("AXTextEntryArea", "Shopping List", [50, 50, 150, 150])]),
+    ]);
+    const result = await clickElement(sandbox, { label: "Shopping List", role: "text entry area" });
+    expect(result.status).toBe("ok");
+    expect(click).toHaveBeenCalledWith(100, 100); // the text entry area's center, not the plain text's
+  });
+
+  it("reports not-found when nothing matches the label", async () => {
+    const { sandbox } = fakeClickSandbox([windowWith("Finder", [node("AXButton", "Cancel", [0, 0, 20, 20])])]);
+    const result = await clickElement(sandbox, { label: "OK", timeoutSeconds: 0 });
+    expect(result.status).toBe("not-found");
+  });
+
+  it("an explicit index still selects correctly among a genuine tie", async () => {
+    const { sandbox, click } = fakeClickSandbox([
+      windowWith("Finder", [node("AXButton", "OK", [0, 0, 20, 20]), node("AXButton", "OK", [100, 100, 120, 120])]),
+    ]);
+    const result = await clickElement(sandbox, { label: "OK", index: 2 });
+    expect(result.status).toBe("ok");
+    expect(click).toHaveBeenCalledWith(110, 110);
   });
 });
 
