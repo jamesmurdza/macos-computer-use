@@ -124,6 +124,16 @@ bucket's public `pub-*.r2.dev` domain) prints plain permanent links instead of p
 Without the R2 vars, it still runs end-to-end and just skips the upload. See
 [testing.md](testing.md) for the JSONL log's schema and more detail.
 
+## Recordings gallery
+
+Every successful `agent-run.ts` run shows up automatically at
+[`/gallery`](http://localhost:3000/gallery) — a clean grid of thumbnails, each with its prompt as
+a description, the date, and a YouTube-style duration badge; click one to play the recording.
+
+It reads `index.json` (rebuilt after each recorded run) from the bucket's public URL, so it needs
+only `R2_PUBLIC_BASE_URL` in `.env` — no R2 secret credentials are ever loaded by the web app
+itself. Without that var set, the page just explains what to add instead of erroring.
+
 ## Test
 
 ```bash

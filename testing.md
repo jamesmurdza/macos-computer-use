@@ -11,15 +11,17 @@
     `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` — a Cloudflare R2
     bucket + API token (Object Read & Write) to upload run artifacts to. Without these,
     `agent-run.ts` still runs end-to-end and just skips the upload step.
-  - Also `agent-run.ts`-only, both optional:
-    - `AGENT_RUN_ANTHROPIC_API_KEY` — takes priority over `ANTHROPIC_API_KEY` for this script only.
-      Deliberately a different name: Next.js auto-loads `.env`'s `ANTHROPIC_API_KEY` for
-      `npm run dev`/`build`/`start`, so a key meant only for headless recorded runs (e.g. one on a
-      separate budget/quota) needs a different name to stay structurally invisible to the web app,
-      not just "remember not to use it there."
-    - `R2_PUBLIC_BASE_URL` — if the bucket has R2's public access enabled (its `pub-*.r2.dev`
-      domain, or a custom domain), set this to it and `agent-run.ts` prints plain permanent public
-      URLs for the video/log instead of presigned ones (which expire and are much longer).
+  - `agent-run.ts`-only, optional: `AGENT_RUN_ANTHROPIC_API_KEY` — takes priority over
+    `ANTHROPIC_API_KEY` for this script only. Deliberately a different name: Next.js auto-loads
+    `.env`'s `ANTHROPIC_API_KEY` for `npm run dev`/`build`/`start`, so a key meant only for
+    headless recorded runs (e.g. one on a separate budget/quota) needs a different name to stay
+    structurally invisible to the web app, not just "remember not to use it there."
+  - `R2_PUBLIC_BASE_URL` — optional for `agent-run.ts` (prints plain permanent public URLs for the
+    video/log instead of presigned ones), **required for the `/gallery` page** (see "Recordings
+    gallery" below) to have anything to show. Set it to the bucket's public access domain (a
+    `pub-*.r2.dev` URL, or a custom domain) once that's turned on in the R2 dashboard. Unlike the
+    `R2_*` credentials above, this one *is* meant to be loaded by the web app -- it's a public URL,
+    not a secret, so the web app never needs R2's actual access keys at all.
 - Database: none
 - Services: use.computer gateway (real macOS VM on the reserved Mac) and the Anthropic API. No mocks anywhere.
 - Only 2 VMs can exist at once on the reservation, so never run two sandbox-creating suites in parallel.
@@ -156,3 +158,38 @@ AGENT_RUN_ANTHROPIC_API_KEY=sk-ant-... npx tsx tools/agent-run.ts "..."   # kept
   domain or a custom domain) over a presigned one -- shorter and permanent instead of expiring.
   Falls back to `getRunArtifactUrl()` (presigned, 7-day expiry) when that var isn't set, which
   still works against a bucket with no public access configured at all.
+- Also captures a thumbnail (`thumbnail.jpg`, a JPEG screenshot of wherever the run ended up) and
+  uploads it alongside the video/log/meta, and rebuilds the bucket-wide gallery index (see below)
+  after every successful upload.
+
+## Recordings gallery
+
+`src/app/gallery/page.tsx` (`/gallery` in the running web app) is a minimal grid of every
+successful recorded run: thumbnail, prompt-as-description, date, and a YouTube-style duration
+badge (`"4:31"`, via `formatDuration()` in `src/lib/gallery.ts`); clicking a card opens a modal
+with the video playing.
+
+- `src/lib/gallery.ts`'s `rebuildGalleryIndex()` (called from `tools/agent-run.ts`, needs R2 write
+  credentials) rebuilds `index.json` **from scratch** every time by listing every `runs/<id>/` in
+  the bucket and reading each one's `meta.json`, rather than incrementally patching a previous
+  index. For a personal tool doing a handful of runs, the extra list+get calls are cheap, and
+  rebuilding from each run's own ground-truth `meta.json` avoids read-modify-write races and
+  self-heals if a run's files are ever edited or deleted by hand. Only `status: "ok"` runs with a
+  video are included; a failed run isn't something worth showing in the gallery.
+- `loadGalleryIndex()` (called from the page, a Server Component) is a plain public `fetch()` of
+  `index.json` against `R2_PUBLIC_BASE_URL` -- no R2 SDK, no credentials, matching this repo's rule
+  that the web app never holds R2 secret credentials. A 404 (no runs recorded yet) is treated as
+  zero entries, not an error.
+- The index stores object **keys**, not resolved URLs, so it stays valid regardless of which URL
+  scheme a reader ends up using; the page resolves each key to a public URL via the existing
+  `publicRunArtifactUrl()`.
+- Verified visually with Playwright screenshots (light and dark mode) against a real bucket with
+  three actual recorded runs. Caught and fixed a real bug this way: the modal's close button was
+  positioned with a negative offset outside `.gallery-modal`'s bounds, which `overflow: auto` was
+  silently clipping to a barely-visible sliver -- not something a CSS read-through would catch,
+  only an actual rendered screenshot did. Fixed by keeping it inside the box, overlaid on the
+  video's corner instead.
+- `takeScreenshot()`'s `scale` option (see `src/lib/sandbox.ts`) is requested for the thumbnail but
+  not actually honored by the gateway as of `use-computer-sdk` 0.1.13 -- still returns a
+  full-resolution image. Compensated with lower JPEG quality (45) instead, since the thumbnail is
+  only ever shown at card size.

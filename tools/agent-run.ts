@@ -3,8 +3,11 @@
  * tools/agent-harness.ts, but additionally:
  *   - records the sandbox's screen for the whole run (sandbox.recording.start/stop + download),
  *   - writes a structured, timestamped JSONL log of every agent event,
- *   - uploads the video, the log, and a small metadata file to Cloudflare R2,
- * so a later tool can overlay the log onto the video.
+ *   - captures a thumbnail screenshot of wherever the run ended up,
+ *   - uploads the video, the log, the thumbnail, and a small metadata file to Cloudflare R2,
+ *   - rebuilds a bucket-wide index.json the /gallery page reads (see src/lib/gallery.ts),
+ * so a later tool can overlay the log onto the video, and so every recorded run shows up in the
+ * gallery without any manual step.
  *
  * This is a sibling to agent-harness.ts, not a replacement for it: the harness stays a fast,
  * credential-light dev-iteration tool (just USE_COMPUTER_* and ANTHROPIC_API_KEY). This script needs
@@ -46,8 +49,9 @@ if (anthropicKey) process.env.ANTHROPIC_API_KEY = anthropicKey;
 
 const { streamAgent } = await import("../src/lib/agent.js");
 const { createSandbox } = await import("../src/lib/sandbox-handle.js");
-const { downloadRecording, setDisplayResolution } = await import("../src/lib/sandbox.js");
+const { downloadRecording, setDisplayResolution, takeScreenshot } = await import("../src/lib/sandbox.js");
 const { uploadRunArtifact, getRunArtifactUrl, publicRunArtifactUrl } = await import("../src/lib/storage.js");
+const { rebuildGalleryIndex } = await import("../src/lib/gallery.js");
 const { isModelChoice, DEFAULT_MODEL_CHOICE } = await import("../src/lib/llm.js");
 
 function parseResolution(v: string | undefined): { width: number; height: number } | undefined {
@@ -160,6 +164,24 @@ try {
   let videoFile: string | undefined;
   let videoContentType: string | undefined;
   let videoFileSize: number | undefined;
+  let thumbnailFile: string | undefined;
+
+  // For the /gallery page: a small screenshot of wherever the run ended up, independent of the
+  // recording itself (still works even if recording.start() never succeeded). Skipped when
+  // rotated for the same reason video download is: `sandbox` is gone, only the new one exists.
+  if (!rotated) {
+    try {
+      // `scale` is requested but not actually honored by the gateway as of use-computer-sdk
+      // 0.1.13 (verified: still returns a full-resolution image) -- quality is turned down
+      // instead to keep the thumbnail file small, since it's only ever shown at card size.
+      const shot = await takeScreenshot(sandbox, { quality: 45, scale: 0.5 });
+      thumbnailFile = "thumbnail.jpg";
+      writeFileSync(`${localDir}/${thumbnailFile}`, shot);
+      console.log(`wrote ${localDir}/${thumbnailFile} (${shot.length} bytes)`);
+    } catch (err) {
+      console.error("Failed to capture thumbnail:", err instanceof Error ? err.message : err);
+    }
+  }
 
   if (recordingId && !rotated) {
     try {
@@ -202,6 +224,7 @@ try {
     videoFile,
     videoContentType,
     videoFileSize,
+    thumbnailFile,
     status,
     error: errorMessage,
     sandboxRotated: rotated,
@@ -217,6 +240,9 @@ try {
       if (videoFile) {
         await uploadRunArtifact(`${prefix}/${videoFile}`, readFileSync(`${localDir}/${videoFile}`), videoContentType ?? "application/octet-stream");
       }
+      if (thumbnailFile) {
+        await uploadRunArtifact(`${prefix}/${thumbnailFile}`, readFileSync(`${localDir}/${thumbnailFile}`), "image/jpeg");
+      }
       // Prefer a plain public URL (permanent, no expiry) when R2_PUBLIC_BASE_URL is set (the
       // bucket's public "pub-*.r2.dev" domain or a custom domain); fall back to a presigned URL
       // otherwise, which works against a private bucket with no public access configured at all.
@@ -225,6 +251,15 @@ try {
       console.log(`\nuploaded to r2://${process.env.R2_BUCKET}/${prefix}/`);
       console.log(`  events: ${eventsUrl}`);
       if (videoUrl) console.log(`  video:  ${videoUrl}`);
+
+      // Rebuild the /gallery index from every run currently in the bucket (not just this one) --
+      // see gallery.ts for why a full rebuild rather than an incremental patch.
+      try {
+        const entries = await rebuildGalleryIndex();
+        console.log(`gallery index rebuilt: ${entries.length} run(s)`);
+      } catch (err) {
+        console.error("Failed to rebuild the gallery index (this run's own artifacts are still uploaded fine):", err instanceof Error ? err.message : err);
+      }
     } catch (err) {
       console.error(`R2 upload failed (artifacts are still intact locally at ${localDir}):`, err instanceof Error ? err.message : err);
     }
