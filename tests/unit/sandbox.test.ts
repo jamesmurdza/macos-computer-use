@@ -153,6 +153,38 @@ describe("uiTreeSummary", () => {
     expect(parsed.windows[0].elements).toEqual([{ role: "AXStaticText", label: "9999" }]);
   });
 
+  it("ignores an implausible window bounds when a direct child is far bigger than it", async () => {
+    // Regression: verified against a real sandbox that Finder's Desktop icon layer reports itself
+    // as a window with a tiny bounds rect (88x21 px, evidently some incidental UI detail, not the
+    // desktop's own area) while its actual child content spans the full screen. Naively filtering
+    // against that rect made a freshly-created desktop folder's icon (and its in-progress rename
+    // field) vanish from the tree right when an agent most needs to see it.
+    const bogusWindowBounds = {
+      applications: [{ info: { name: "Finder", active: true }, windows: [1] }],
+      windows: [
+        {
+          name: "Finder",
+          owner: "Finder",
+          role: "app",
+          is_on_screen: true,
+          bounds: { x: 1810, y: 106, width: 88, height: 21 }, // implausibly tiny vs. its child below
+          children: [
+            {
+              name: null,
+              role: "AXGroup",
+              description: "desktop",
+              bbox: [0, 0, 1920, 1080], // far bigger than the window's own claimed bounds
+              children: [{ name: "untitled_folder", role: "AXImage", bbox: [1822, 38, 1886, 102] }],
+            },
+          ],
+        },
+      ],
+    };
+    const json = await uiTreeSummary(fakeSandbox(bogusWindowBounds));
+    const parsed = JSON.parse(json);
+    expect(parsed.windows[0].elements).toEqual([{ role: "AXGroup", label: "desktop", children: [{ role: "AXImage", label: "untitled_folder" }] }]);
+  });
+
   it("still drops an empty element whose role isn't an input (e.g. a bare wrapper AXGroup)", async () => {
     const withEmptyGroup = {
       applications: [{ info: { name: "Notes", active: true }, windows: [1] }],

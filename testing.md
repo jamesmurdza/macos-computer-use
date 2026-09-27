@@ -86,6 +86,39 @@ Command: `npm test` (unit + integration + sandbox scenarios, serially) then `npm
 | upload + osascript (TextEdit) | 4-6 s |
 | `setDisplayResolution()` (upload script, run over SSH) | ~1-2 s |
 
+## Known accessibility-tree gaps (found stress-testing cheap models, real sandboxes)
+
+Each of these was root-caused with a raw `sandbox.uiTree()` dump and/or a live screenshot against a
+real sandbox, not inferred from an agent's tool-call trace alone -- see `src/lib/sandbox.ts` for the
+fixed ones.
+
+- **Fixed**: an empty input control (no name/description/value at all -- e.g. a brand-new Notes
+  document's whole text editor) used to be invisible to both the tree summary and `click_element`,
+  since both required a label to exist at all. `nodeLabel()` now synthesizes one ("(empty text
+  area)") for input-shaped roles.
+- **Fixed**: `role: "text entry area"` could accidentally match a plain `"text"` node, since
+  `normRole("text entry area")` naively `.includes("text")`. `matchElements()` now prefers an exact
+  role match before falling back to the substring one.
+- **Fixed**: a rendered web page's real content sits 15-18 levels deep in nested generic groups,
+  far past the old `maxDepth: 6` (sized for native dialogs). Fixed by filtering to each window's own
+  `bounds` as a viewport (dropping off-screen/scrolled-past content instead of depth alone) and
+  raising `maxDepth`/`maxChars`.
+- **Fixed**: that same viewport filter initially broke Finder's Desktop icon layer, which reports
+  itself as a window with an implausibly tiny `bounds` (e.g. 88x21 px) while its actual child content
+  spans the full screen -- `reliableViewport()` now ignores a window's `bounds` when a direct child's
+  bbox is far bigger than the window claims to be, or the bounds are too small to be a real content
+  area at all.
+- **Not fixable here -- a real macOS/gateway limitation**: System Settings' newer SwiftUI-based panes
+  (confirmed on "Appearance"; likely others) can report **zero children** for the whole pane via the
+  accessibility API even though the content is visibly rendered on screen -- verified by polling raw
+  `uiTree()` repeatedly over 6+ seconds with no change, and independently confirming the pane's
+  content was actually on screen via a screenshot at the same moment. This isn't a pruning bug: the
+  raw, unpruned response itself has no children for that window. An agent has no text-based way to
+  perceive or verify state in a pane like this at all (blind keyboard navigation is the only
+  fallback, and is unverifiable without a vision-capable step). If a task needs to change a System
+  Settings toggle, expect this to fail unpredictably depending on which pane it's in; there is no
+  code fix available at this layer.
+
 ## Display resolution
 
 Sandboxes are Apple `Virtualization.framework` VMs (`Model Identifier: VirtualMac2,1`, `Chip:

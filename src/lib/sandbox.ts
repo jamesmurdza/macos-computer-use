@@ -169,6 +169,32 @@ function intersectsViewport(bbox: number[] | undefined, viewport: Rect | undefin
 }
 
 /**
+ * A window's own `bounds` is usually a trustworthy viewport (verified against a real Safari
+ * window), but not always: Finder's Desktop icon layer reports itself as a ~window~ whose `bounds`
+ * is a tiny sliver (e.g. 88x21 px, evidently some incidental UI detail's rect, not the desktop's own
+ * area) while its actual child content spans the full screen -- verified against a real sandbox
+ * right after creating a desktop folder. Filtering that child against the reported 88x21 rect would
+ * make the new folder's own icon (and its in-progress rename field) vanish from the tree entirely,
+ * right when the model most needs to see it. Guard against this two ways: bounds implausibly small
+ * to be a real content area at all, or a direct child reporting a bbox far bigger than the window
+ * claiming to contain it -- either way, skip filtering for that window rather than risk hiding real
+ * on-screen content because of one untrustworthy rectangle.
+ */
+function reliableViewport(w: UiWindowNode): Rect | undefined {
+  const b = w.bounds;
+  if (!b || b.width <= 0 || b.height <= 0) return undefined;
+  const windowArea = b.width * b.height;
+  if (windowArea < 10_000) return undefined; // smaller than ~100x100 -- not plausible as a real content viewport
+  for (const c of w.children ?? []) {
+    const cb = c.visible_bbox ?? c.bbox;
+    if (!Array.isArray(cb) || cb.length !== 4) continue;
+    const childArea = Math.max(0, cb[2] - cb[0]) * Math.max(0, cb[3] - cb[1]);
+    if (childArea > windowArea * 4) return undefined; // a direct child far bigger than its own window
+  }
+  return b;
+}
+
+/**
  * role/label/children only — drops ids, geometry, and structural wrappers with nothing in them.
  *
  * `viewport`, when given, additionally drops a node's *label* (treating it the same as having no
@@ -237,7 +263,7 @@ function summarizeTree(raw: UiTreeResponse, opts: UiSummaryOptions = {}): string
       role: w.role,
       title: w.name || undefined,
       elements: (w.children ?? [])
-        .map((c) => pruneElement(c, 0, maxDepth, w.bounds))
+        .map((c) => pruneElement(c, 0, maxDepth, reliableViewport(w)))
         .filter((c): c is PrunedElement => c !== null),
     }));
 
