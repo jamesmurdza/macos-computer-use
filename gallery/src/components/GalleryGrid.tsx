@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { GalleryEntryResolved } from "../lib/gallery";
 import { formatDate, formatDuration } from "../lib/gallery";
+import { captionAt, parseCaptions, type CaptionEntry } from "../lib/captions";
 
 /**
  * Every run gets a real permalink at `/runs/<runId>` (see that route's page.tsx -- it renders this
@@ -62,22 +63,62 @@ export function GalleryGrid({ entries, initialRunId }: { entries: GalleryEntryRe
         ))}
       </div>
 
-      {selected && (
-        <div className="gallery-modal-overlay" onClick={close}>
-          <div className="gallery-modal" onClick={(ev) => ev.stopPropagation()}>
-            <button className="gallery-modal-close" onClick={close} aria-label="Close">
-              &times;
-            </button>
-            <video src={selected.videoUrl} controls autoPlay />
-            <div className="gallery-modal-meta">
-              <span className="gallery-desc">{selected.description}</span>
-              <span className="gallery-date">
-                {formatDate(selected.date)} · {formatDuration(selected.durationMs)}
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
+      {selected && <RunModal key={selected.runId} entry={selected} onClose={close} />}
     </>
+  );
+}
+
+/** The video modal, split out from GalleryGrid purely for readability -- this is where the
+ * events.jsonl-driven caption overlay lives. */
+function RunModal({ entry, onClose }: { entry: GalleryEntryResolved; onClose: () => void }) {
+  const [showCaptions, setShowCaptions] = useState(true);
+  const [captions, setCaptions] = useState<CaptionEntry[]>([]);
+  const [currentCaption, setCurrentCaption] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    // Same-origin proxy, not entry.eventsUrl directly -- R2's public domain sends no CORS headers,
+    // so a browser fetch() straight to it would be blocked (see api/events/[runId]/route.ts).
+    fetch(`/api/events/${entry.runId}`)
+      .then((res) => (res.ok ? res.text() : ""))
+      .then((text) => {
+        if (!cancelled && text) setCaptions(parseCaptions(text));
+      })
+      .catch(() => {}); // captions are a nice-to-have -- a fetch failure just means no overlay, not a broken modal
+    return () => {
+      cancelled = true;
+    };
+  }, [entry.runId]);
+
+  return (
+    <div className="gallery-modal-overlay" onClick={onClose}>
+      <div className="gallery-modal" onClick={(ev) => ev.stopPropagation()}>
+        <button className="gallery-modal-close" onClick={onClose} aria-label="Close">
+          &times;
+        </button>
+        <div className="gallery-video-wrap">
+          <video
+            src={entry.videoUrl}
+            controls
+            autoPlay
+            onTimeUpdate={(ev) => setCurrentCaption(captionAt(captions, ev.currentTarget.currentTime * 1000))}
+          />
+          {showCaptions && currentCaption && <div className="gallery-caption">{currentCaption}</div>}
+        </div>
+        <div className="gallery-modal-meta">
+          <span className="gallery-desc">{entry.description}</span>
+          <span className="gallery-date">
+            {formatDate(entry.date)} · {formatDuration(entry.durationMs)}
+          </span>
+          <label className="gallery-caption-toggle">
+            <input type="checkbox" checked={showCaptions} onChange={(ev) => setShowCaptions(ev.target.checked)} />
+            <span className="gallery-toggle-track">
+              <span className="gallery-toggle-thumb" />
+            </span>
+            Show agent captions
+          </label>
+        </div>
+      </div>
+    </div>
   );
 }
