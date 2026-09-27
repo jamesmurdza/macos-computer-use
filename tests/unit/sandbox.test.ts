@@ -309,6 +309,79 @@ describe("uiTreeSummary", () => {
     const parsed = JSON.parse(json);
     expect(parsed.windows[0].elements).toEqual([]);
   });
+
+  it("surfaces a Safari Cmd+S sheet's real controls, nested as a normal child of the main window", async () => {
+    // A path investigated and ruled out while root-causing the tax-form demo's save failures:
+    // Safari's own gateway-provided uiTree() *does* also emit a separate, always-empty top-level
+    // pseudo-window for this same sheet (owner "Safari", children: []) -- easy to mistake for "the
+    // sheet is unreadable" if that's the only entry inspected. But the sheet's real content lives
+    // nested as a plain child (role "sheet") of the *main* content window, exactly like any other
+    // dialog, and was already fully readable and clickable there with no special-casing needed --
+    // verified against a real sandbox, including that click_element("fw9")/click_element("Save")
+    // both resolve unambiguously. This test pins that down as a real regression guard: an app's
+    // own text field for a sheet's filename typically has no `name`/`description` of its own here,
+    // so this also exercises nodeLabel()'s value fallback for a plain (non-Terminal) text field.
+    const withSheet = {
+      applications: [{ info: { name: "Safari", active: true }, windows: [1] }],
+      windows: [
+        {
+          name: "https://www.irs.gov/pub/irs-pdf/fw9.pdf",
+          owner: "Safari",
+          role: "app",
+          is_on_screen: true,
+          children: [
+            {
+              name: null,
+              role: "AXSheet",
+              role_description: "sheet",
+              children: [
+                {
+                  name: null,
+                  role: "AXSplitGroup",
+                  role_description: "split group",
+                  children: [
+                    { name: "Save As:", role: "AXStaticText", role_description: "text", bbox: [814, 448, 868, 466] },
+                    { name: null, role: "AXTextField", role_description: "text field", value: "fw9", bbox: [874, 444, 1106, 470] },
+                    { name: "Cancel", role: "AXButton", role_description: "button", bbox: [968, 562, 1044, 588] },
+                    { name: "Save", role: "AXButton", role_description: "button", bbox: [1050, 562, 1126, 588] },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        // The gateway's own separate, always-empty pseudo-window for the same sheet -- present
+        // alongside the real one above; must not be mistaken for "the sheet has no content".
+        { name: null, owner: "Safari", role: "app", is_on_screen: true, children: [] },
+      ],
+    };
+    const sandbox = fakeSandbox(withSheet);
+
+    const json = await uiTreeSummary(sandbox);
+    const parsed = JSON.parse(json);
+    const mainWindow = parsed.windows[0];
+    expect(mainWindow.elements).toEqual([
+      {
+        role: "sheet",
+        children: [
+          {
+            role: "split group",
+            children: [
+              { role: "text", label: "Save As:" },
+              { role: "text field", label: "fw9" },
+              { role: "button", label: "Cancel" },
+              { role: "button", label: "Save" },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    const clickResult = await clickElement(fakeClickSandbox([withSheet.windows[0]]).sandbox, { label: "fw9", role: "text field" });
+    expect(clickResult.status).toBe("ok");
+    const saveResult = await clickElement(fakeClickSandbox([withSheet.windows[0]]).sandbox, { label: "Save", role: "button" });
+    expect(saveResult.status).toBe("ok");
+  });
 });
 
 describe("clickElement", () => {
