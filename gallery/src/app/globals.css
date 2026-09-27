@@ -20,7 +20,17 @@ body { margin: 0; color: var(--ink); background: var(--bg); font: 14.5px/1.55 va
 
 /* ---------- a clean, minimal grid of recorded runs ---------- */
 .gallery { font-family: var(--sans); max-width: 1100px; margin: 0 auto; padding: 40px 24px 64px; }
-.gallery-title { margin: 0 0 28px; font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+.gallery-header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 28px; }
+.gallery-title { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+/* Same stripped-chrome treatment as .gallery-speed-select inside the modal -- reads as plain text
+   with a value, not a boxed form control, top-right next to the title. */
+.gallery-model-filter {
+  background: transparent; color: var(--ink-2); border: 0; padding: 0; margin: 0; font: inherit;
+  font-size: 13px; cursor: pointer; appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  text-align: right;
+}
+.gallery-model-filter:focus { outline: none; color: var(--ink); }
+.gallery-model-filter option { color: var(--ink); background: var(--panel); }
 .gallery-empty { color: var(--ink-2); font-size: 14px; }
 .gallery-empty code {
   font-family: var(--mono); font-size: .92em; background: var(--panel-2); padding: 1px 5px; border-radius: 5px;
@@ -108,6 +118,20 @@ body { margin: 0; color: var(--ink); background: var(--bg); font: 14.5px/1.55 va
 }
 .gallery-caption-toggle input:checked + .gallery-toggle-track { background: var(--ink); }
 .gallery-caption-toggle input:checked + .gallery-toggle-track .gallery-toggle-thumb { transform: translateX(13px); }
+/* Same stripped-chrome treatment as .gallery-speed-select -- reads as a plain text action, not a
+   boxed button, consistent with the rest of this row. */
+.gallery-export-button {
+  display: inline-flex; align-items: center; gap: 7px; background: transparent; color: var(--ink-2);
+  border: 0; padding: 0; margin: 0; font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.gallery-export-button:hover:not(:disabled) { color: var(--ink); }
+.gallery-export-button:disabled { cursor: default; }
+.gallery-spinner {
+  width: 11px; height: 11px; border-radius: 50%; flex: none;
+  border: 2px solid var(--line-2); border-top-color: var(--ink-2);
+  animation: gallery-spin .7s linear infinite;
+}
+@keyframes gallery-spin { to { transform: rotate(360deg); } }
 /* Sits over the video's top-right corner, not outside the modal box: .gallery-modal has
    `overflow: auto`, which clips any absolutely-positioned child sitting outside its bounds. */
 .gallery-modal-close {

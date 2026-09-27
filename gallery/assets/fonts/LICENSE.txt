@@ -1,0 +1,8 @@
+DejaVuSans.ttf -- bundled here so the burned-in caption export (see
+src/app/api/export/[runId]/route.ts) has a font file to hand ffmpeg's drawtext filter directly,
+rather than depending on whatever (if any) fonts happen to be installed on the deploy target.
+
+Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved. Bitstream Vera is a trademark of
+Bitstream, Inc. DejaVu changes are in the public domain. License: Bitstream Vera License (free to
+copy, distribute, and embed; see https://dejavu-fonts.github.io/License.html for the full text).
+Source: https://dejavu-fonts.github.io/
