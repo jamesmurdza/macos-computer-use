@@ -4,6 +4,7 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 import { buildAssScript, burnCaptions } from "../../../../lib/burnCaptions";
 import { parseCaptions } from "../../../../lib/captions";
+import { computeKeepSegments, detectFreezes, FREEZE_THRESHOLD_SEC, GRACE_SEC, probeVideo, trimPauses } from "../../../../lib/trimPauses";
 
 export const runtime = "nodejs";
 // Re-encoding is CPU-bound and roughly proportional to video length -- these recordings are all
@@ -22,6 +23,11 @@ export const maxDuration = 300;
  * `videoKey` comes from the client's already-resolved `GalleryEntry.videoKey` (its extension
  * varies -- mp4/mov/webm, see KNOWN_VIDEO_EXTENSIONS in tools/agent-run.ts -- so, unlike
  * events.jsonl's fixed-name convention, it can't be reconstructed from `runId` alone).
+ *
+ * After the captions are burned in, a last pass (see trimPauses.ts) shortens any stretch that's
+ * frozen for FREEZE_THRESHOLD_SEC or longer down to just its first GRACE_SEC -- deliberately run
+ * on the captioned video, not the raw one, so a caption change counts as "something happened" and
+ * ends a pause there rather than letting it run through to the next real visual change.
  */
 export async function GET(req: Request, { params }: { params: Promise<{ runId: string }> }) {
   const { runId } = await params;
@@ -48,16 +54,29 @@ export async function GET(req: Request, { params }: { params: Promise<{ runId: s
   try {
     const inputPath = path.join(dir, "input");
     const assPath = path.join(dir, "captions.ass");
-    const outputPath = path.join(dir, "output.mp4");
+    const captionedPath = path.join(dir, "captioned.mp4");
+    const trimmedPath = path.join(dir, "trimmed.mp4");
 
     await Promise.all([
       writeFile(inputPath, Buffer.from(await videoRes.arrayBuffer())),
       writeFile(assPath, buildAssScript(captions), "utf8"),
     ]);
 
-    await burnCaptions(inputPath, assPath, outputPath);
+    await burnCaptions(inputPath, assPath, captionedPath);
 
-    const output = await readFile(outputPath);
+    const { durationSec, hasAudio } = await probeVideo(captionedPath);
+    const freezes = await detectFreezes(captionedPath, FREEZE_THRESHOLD_SEC, durationSec);
+    const keepSegments = computeKeepSegments(freezes, GRACE_SEC, durationSec);
+
+    // Nothing was actually frozen long enough to trim -- skip the extra re-encode and just ship
+    // the captioned video as-is (a single [0, durationSec] "keep segment" covers the whole thing).
+    const finalPath =
+      keepSegments.length === 1 && keepSegments[0].start === 0 && keepSegments[0].end === durationSec
+        ? captionedPath
+        : trimmedPath;
+    if (finalPath === trimmedPath) await trimPauses(captionedPath, trimmedPath, keepSegments, hasAudio);
+
+    const output = await readFile(finalPath);
     return new NextResponse(output, {
       headers: {
         "Content-Type": "video/mp4",
