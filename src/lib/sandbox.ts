@@ -609,27 +609,38 @@ const EMPTY_LABELABLE_ROLE_HINTS = ["textarea", "textfield", "textentryarea", "s
  * a "what happened" question is almost always about) are always last, not first. */
 const MAX_TEXT_VALUE_CHARS = 4000;
 
-/** Real name first, then (for a text-content role -- see EMPTY_LABELABLE_ROLE_HINTS) its `value`,
- * then description, then value again for every other role; for an otherwise-unlabeled input-shaped
- * control, a synthetic "(empty text area)"-style placeholder instead of nothing, so it stays
- * visible and clickable by that exact string. Shared by pruneElement() (what the model reads) and
- * collectClickable() (what click_element can target), so a label the model sees in the tree is
- * always one it can click.
+/** For a text-content role (see EMPTY_LABELABLE_ROLE_HINTS), its `value` first, then name, then
+ * description; for every other role, name, then description, then value; for an otherwise-
+ * unlabeled input-shaped control, a synthetic "(empty text area)"-style placeholder instead of
+ * nothing, so it stays visible and clickable by that exact string. Shared by pruneElement() (what
+ * the model reads) and collectClickable() (what click_element can target), so a label the model
+ * sees in the tree is always one it can click.
  *
- * value is checked *before* description for text-content roles specifically because of a real,
- * verified case: Terminal.app's own text area reports `description: "shell"` (a static, useless
+ * `value` is checked before `description` for text-content roles because of a real, verified
+ * case: Terminal.app's own text area reports `description: "shell"` (a static, useless
  * accessibility hint, always exactly that word) while `value` holds the actual scrollback text --
  * with the old `name || description || value` order, "shell" always won and the real output was
- * silently unreachable no matter what command ran. Roles where `description` is itself the useful
- * bit (most non-text-content controls) are unaffected, since this branch only fires for roles
- * matching EMPTY_LABELABLE_ROLE_HINTS in the first place.
+ * silently unreachable no matter what command ran.
+ *
+ * `value` is checked before `name` for text-content roles for the same reason, found later and
+ * independently: a real Xcode "New Project" sheet's Product Name field reports `name:
+ * "Product_Name:"` -- the field's own static caption, not what's been typed into it -- while
+ * `value` holds the actual text entered. With `name` unconditionally first, the caption always
+ * won, so a real agent run had no way to see its own typed "HelloTimer" had actually landed,
+ * mistook that for a failure, and retyped into the field a second time without clearing it,
+ * producing "HelloTimerHelloTimer". Both bugs are the same shape -- a static, unhelpful
+ * accessibility property masking real content -- just on opposite sides of the priority order,
+ * which is why `value` now leads for text-content roles specifically rather than being reordered
+ * past just one neighbor. Roles where `name`/`description` are themselves the useful bit (most
+ * non-text-content controls, e.g. a button's own name) are unaffected, since this reordering only
+ * applies to roles matching EMPTY_LABELABLE_ROLE_HINTS in the first place.
  */
 function nodeLabel(node: UiElementNode): string | undefined {
   const role = node.role_description || node.role;
   const isTextContentRole = !!role && EMPTY_LABELABLE_ROLE_HINTS.some((k) => normRole(role).includes(k));
   const rawValue = typeof node.value === "string" && node.value ? node.value : undefined;
   const value = rawValue && rawValue.length > MAX_TEXT_VALUE_CHARS ? `…(truncated)${rawValue.slice(-MAX_TEXT_VALUE_CHARS)}` : rawValue;
-  const real = node.name || (isTextContentRole ? value : undefined) || node.description || value || undefined;
+  const real = (isTextContentRole ? value : undefined) || node.name || node.description || value || undefined;
   if (real) return real;
   if (!role) return undefined;
   return isTextContentRole ? `(empty ${humanizeRole(role)})` : undefined;
@@ -797,16 +808,67 @@ export async function clickElement(sandbox: SandboxHandle, opts: UiClickOptions)
   return withScreen(sandbox, { status: "ok" });
 }
 
-/** Type text into whatever control currently has keyboard focus (click it first). */
-/** Whether any element's `value` anywhere in the tree contains `text` as a substring. Walks the
- * raw windows directly (not the pruned/clickable views) so this can't miss something those views
- * happen to filter out. */
-function treeContainsValue(raw: UiTreeResponse, text: string): boolean {
+/** Whether any element's displayed text content anywhere in the tree contains `text` as a
+ * substring. Walks the raw windows directly (not the pruned/clickable views, so this can't miss
+ * something those happen to filter out) but reuses `nodeLabel()` -- the same "what does this
+ * control actually show" logic the pruned summary itself is built from -- rather than reading
+ * `node.value` directly.
+ *
+ * That reuse matters: verified against a real sandbox that a naive `node.value`-only check
+ * produces a false negative for real, successfully-typed text. A raw dump of a real Notes editor
+ * after typing a multi-line note showed the actual content sitting in the node's raw `name` field
+ * (`{"role":"text entry area","name":"Lake Tahoe Hike Ideas\nCave Rock – ...", "value":null}`),
+ * not `value` -- the opposite of a PDF form's text fields, which carry their content in `value`
+ * with `name` left null. `nodeLabel()` already unifies exactly this kind of app-to-app difference
+ * (name-first, falling back to value for text-content roles); checking raw `value` alone missed
+ * an entire class of real, correctly-typed text and would have taught every future run to distrust
+ * a signal that was actually wrong about the failure, not the typing.
+ */
+function treeContainsText(raw: UiTreeResponse, text: string, transform: (s: string) => string = (s) => s): boolean {
   const walk = (node: UiElementNode): boolean => {
-    if (typeof node.value === "string" && node.value.includes(text)) return true;
+    const label = nodeLabel(node);
+    if (typeof label === "string" && transform(label).includes(text)) return true;
     return (node.children ?? []).some(walk);
   };
   return (raw.windows ?? []).some((w) => (w.children ?? []).some(walk));
+}
+
+/** Undoes the specific autocorrect-style substitutions macOS text controls are known to apply as
+ * you type (verified against a real sandbox, typing a real multi-line bulleted note into Notes):
+ * a straight `'`/`"` becomes a curly one, and a line starting with a bullet/list marker has that
+ * literal marker character stripped once the app's own auto-list formatting kicks in (observed:
+ * inconsistently -- the first bulleted line lost its "• ", later ones in the same note kept it).
+ * Comparing normalized-vs-normalized text means these cosmetic, app-applied changes don't look
+ * like "the text didn't land" when it plainly did. */
+function normalizeForVerification(line: string): string {
+  return line
+    .trim()
+    .replace(/^(?:[•\-*]|\d+[.)])\s+/, "")
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .toLowerCase();
+}
+
+/** Whether every non-empty line of `text` can be found somewhere in the tree, checked line by
+ * line (not as one contiguous block) and after `normalizeForVerification()`. Line-by-line,
+ * normalized comparison -- rather than one exact whole-block substring match -- is deliberate: a
+ * real multi-line type_text call (e.g. a title plus a bulleted list, exactly the pattern this
+ * codebase's own system prompt recommends for multi-line content) can have individual lines
+ * reformatted by the target app in ways that are cosmetic, not a sign anything failed. Requiring
+ * an exact match of the *entire* block would flag that as a miss; checking each line on its own
+ * terms doesn't. Returns the first line that couldn't be found anywhere (for the error message),
+ * or undefined if every line was found. */
+function findUnverifiedLine(raw: UiTreeResponse, text: string): string | undefined {
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (treeContainsText(raw, line)) continue;
+    // Normalize both sides identically -- comparing a normalized line against an un-normalized
+    // label (e.g. lowercased query vs. mixed-case label) would never match at all.
+    if (treeContainsText(raw, normalizeForVerification(line), normalizeForVerification)) continue;
+    return line;
+  }
+  return undefined;
 }
 
 /** Type text into whatever control currently has keyboard focus (click it first). Settles, then
@@ -822,11 +884,12 @@ export async function typeText(sandbox: SandboxHandle, text: string): Promise<Ui
   await sleep(600); // settle, matching withScreen()'s own post-"ok" delay
   const raw = (await sandbox.uiTree()) as UiTreeResponse;
   const screen = summarizeTree(raw);
-  if (treeContainsValue(raw, text)) return { status: "ok", screen };
+  const missingLine = findUnverifiedLine(raw, text);
+  if (!missingLine) return { status: "ok", screen };
   return {
     status: "ok",
     verified: false,
-    message: `typed "${text}" but it doesn't appear in any on-screen field's value -- it may not have landed where intended`,
+    message: `typed "${text}" but at least this part doesn't appear anywhere on screen: "${missingLine}" -- it may not have landed where intended`,
     screen,
   };
 }
